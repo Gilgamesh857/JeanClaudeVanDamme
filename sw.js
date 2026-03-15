@@ -34,6 +34,8 @@ self.addEventListener('activate', e => {
 // - App shell (same origin) → cache-first, fall back to network
 // - Google APIs (Drive, Sheets, OAuth, Fonts) → network-first, no caching
 self.addEventListener('fetch', e => {
+  // Ignore non-http requests (chrome-extension://, etc.)
+  if (!e.request.url.startsWith('http')) return;
   const url = new URL(e.request.url);
 
   // Always network for Google API calls and OAuth
