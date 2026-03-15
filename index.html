@@ -841,7 +841,7 @@ function renderPortfolio(){
 
 function openSheetsSetup(){
   const root=document.getElementById('modalRoot');
-  const needsOAuth = !window.state.oauthRefreshToken;
+  const needsOAuth = !state.oauthRefreshToken;
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal">
       <div class="modal-header"><div class="modal-title">Portfolio — Google Sheets</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
@@ -853,7 +853,7 @@ function openSheetsSetup(){
       </div>
       <div class="field-row">
         <div class="field-label">Spreadsheet ID</div>
-        <input class="field-input" id="sheetsIdInput" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms" value="${window.state.sheetsId||''}">
+        <input class="field-input" id="sheetsIdInput" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms" value="${state.sheetsId||''}">
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -866,7 +866,7 @@ function openSheetsSetup(){
 function connectSheets(){
   const id=(document.getElementById('sheetsIdInput')?.value||'').trim();
   if(!id){showToast('Enter a spreadsheet ID');return;}
-  window.state.sheetsId=id;
+  state.sheetsId=id;
   save();closeModal();
   syncFromSheets();
 }
@@ -877,7 +877,7 @@ async function syncFromSheets(){
   try{
     const token = await getAccessToken();
   if(!token){showToast('Not connected to Google — tap the Drive badge');return;}
-  const base=`https://sheets.googleapis.com/v4/spreadsheets/${window.state.sheetsId}/values`;
+  const base=`https://sheets.googleapis.com/v4/spreadsheets/${state.sheetsId}/values`;
   const hdrs={Authorization:`Bearer ${token}`};
 
     // Read portfolio tab
@@ -1046,14 +1046,14 @@ const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file https://www.g
     });
     const data = await res.json();
     if(data.error) throw new Error(data.error_description||data.error);
-    window.state.oauthClientId     = stored.clientId;
-    window.state.oauthClientSecret = stored.clientSecret;
-    window.state.oauthRefreshToken = data.refresh_token;
-    window.state.oauthAccessToken  = data.access_token;
-    window.state.oauthExpiry       = Date.now() + (data.expires_in - 60) * 1000;
-    window.state.driveSynced       = true;
+    state.oauthClientId     = stored.clientId;
+    state.oauthClientSecret = stored.clientSecret;
+    state.oauthRefreshToken = data.refresh_token;
+    state.oauthAccessToken  = data.access_token;
+    state.oauthExpiry       = Date.now() + (data.expires_in - 60) * 1000;
+    state.driveSynced       = true;
     // share with Sheets
-    window.state.sheetsToken = data.access_token;
+    state.sheetsToken = data.access_token;
     sessionStorage.removeItem('oauth_pending');
     save();
     updateSyncBadge('ok');
@@ -1064,11 +1064,11 @@ const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file https://www.g
 
 async function getAccessToken(){
   // Return cached token if still valid
-  if(window.state.oauthAccessToken && Date.now() < window.state.oauthExpiry){
-    return window.state.oauthAccessToken;
+  if(state.oauthAccessToken && Date.now() < state.oauthExpiry){
+    return state.oauthAccessToken;
   }
   // Use refresh token to get a new access token silently
-  if(!window.state.oauthRefreshToken || !window.state.oauthClientId || !window.state.oauthClientSecret){
+  if(!state.oauthRefreshToken || !state.oauthClientId || !state.oauthClientSecret){
     return null;
   }
   try{
@@ -1076,17 +1076,17 @@ async function getAccessToken(){
       method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body: new URLSearchParams({
-        refresh_token: window.state.oauthRefreshToken,
-        client_id:     window.state.oauthClientId,
-        client_secret: window.state.oauthClientSecret,
+        refresh_token: state.oauthRefreshToken,
+        client_id:     state.oauthClientId,
+        client_secret: state.oauthClientSecret,
         grant_type:    'refresh_token'
       })
     });
     const data = await res.json();
     if(data.error) throw new Error(data.error_description||data.error);
-    window.state.oauthAccessToken = data.access_token;
-    window.state.oauthExpiry      = Date.now() + (data.expires_in - 60) * 1000;
-    window.state.sheetsToken      = data.access_token;
+    state.oauthAccessToken = data.access_token;
+    state.oauthExpiry      = Date.now() + (data.expires_in - 60) * 1000;
+    state.sheetsToken      = data.access_token;
     save();
     return data.access_token;
   }catch(e){
@@ -1103,7 +1103,7 @@ function syncNow(){
 
 function openOAuthSetup(){
   const root=document.getElementById('modalRoot');
-  const isConnected = !!window.state.oauthRefreshToken;
+  const isConnected = !!state.oauthRefreshToken;
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal">
       <div class="modal-header">
@@ -1126,11 +1126,11 @@ function openOAuthSetup(){
            </div>
            <div class="field-row">
              <div class="field-label">Client ID</div>
-             <input class="field-input" id="oauthClientId" placeholder="xxxx.apps.googleusercontent.com" value="${window.state.oauthClientId||''}">
+             <input class="field-input" id="oauthClientId" placeholder="xxxx.apps.googleusercontent.com" value="${state.oauthClientId||''}">
            </div>
            <div class="field-row">
              <div class="field-label">Client Secret</div>
-             <input class="field-input" id="oauthClientSecret" placeholder="GOCSPX-…" type="password" value="${window.state.oauthClientSecret||''}">
+             <input class="field-input" id="oauthClientSecret" placeholder="GOCSPX-…" type="password" value="${state.oauthClientSecret||''}">
            </div>
            <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;line-height:1.6">
              Authorised redirect URI to add in Cloud Console:<br>
@@ -1165,14 +1165,14 @@ function startOAuthFlow(){
 
 function disconnectOAuth(){
   if(!confirm('Disconnect Google account? Diary entries stay local.'))return;
-  window.state.oauthClientId=null;window.state.oauthClientSecret=null;
-  window.state.oauthRefreshToken=null;window.state.oauthAccessToken=null;
-  window.state.oauthExpiry=0;window.state.driveSynced=false;
+  state.oauthClientId=null;state.oauthClientSecret=null;
+  state.oauthRefreshToken=null;state.oauthAccessToken=null;
+  state.oauthExpiry=0;state.driveSynced=false;
   save();closeModal();updateSyncBadge('disconnected');showToast('Disconnected');
 }
 function reAuthenticate(){
-  window.state.oauthRefreshToken=null;window.state.oauthAccessToken=null;
-  window.state.oauthExpiry=0;window.state.driveSynced=false;
+  state.oauthRefreshToken=null;state.oauthAccessToken=null;
+  state.oauthExpiry=0;state.driveSynced=false;
   save();closeModal();
   setTimeout(openOAuthSetup,100);
 }
@@ -1191,13 +1191,13 @@ function updateSyncBadge(status){
 async function pushToDrive(){
   const token = await getAccessToken();
   if(!token){
-    if(window.state.oauthRefreshToken) updateSyncBadge('error');
+    if(state.oauthRefreshToken) updateSyncBadge('error');
     return;
   }
   updateSyncBadge('syncing');
-  const data=JSON.stringify({entries:window.state.entries,memos:window.state.memos,lastSync:new Date().toISOString()},null,2);
+  const data=JSON.stringify({entries:state.entries,memos:state.memos,lastSync:new Date().toISOString()},null,2);
   try{
-    let fileId=window.state.driveFileId;
+    let fileId=state.driveFileId;
     if(!fileId){
       const searchRes=await fetch(`https://www.googleapis.com/drive/v3/files?q=name%3D'investment-diary.json'+and+trashed%3Dfalse&fields=files(id,name)`,{headers:{Authorization:`Bearer ${token}`}});
       const searchData=await searchRes.json();
@@ -1212,16 +1212,16 @@ async function pushToDrive(){
       fileId=created.id;
       await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:data});
     }
-    window.state.driveFileId=fileId;save();updateSyncBadge('ok');
+    state.driveFileId=fileId;save();updateSyncBadge('ok');
   }catch(err){updateSyncBadge('error');showToast('Drive sync failed');}
 }
 
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
 render();
 // Set initial sync badge state based on persisted OAuth
-if(window.state.oauthRefreshToken){updateSyncBadge('ok');}
-else if(window.state.driveSynced){
-  window.state.driveSynced=false;window.state.driveToken=null;
+if(state.oauthRefreshToken){updateSyncBadge('ok');}
+else if(state.driveSynced){
+  state.driveSynced=false;state.driveToken=null;
   save();
 }
 </script>
