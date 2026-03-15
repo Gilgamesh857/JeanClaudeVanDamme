@@ -776,8 +776,8 @@ function openNewsDigestModal(tickers){const root=document.getElementById('modalR
 function renderPortfolio(){
   const p=state.portfolio;
   const syncedAt=state.portfolioSyncedAt?'Updated '+fmtDateRelative(state.portfolioSyncedAt):'Never synced';
-  const connectBtn=`<button class="weekly-digest-btn" onclick="openSheetsSetup()" style="margin-bottom:12px">${state.sheetsId?'⟳ Sync from Sheets':'↓ Connect Google Sheets'}</button>`;
-  const syncInfo=state.sheetsId?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${syncedAt}</div>`:'';
+  const connectBtn=`<button class="weekly-digest-btn" onclick="openPortfolioPaste()" style="margin-bottom:12px">↓ Paste portfolio update</button>`;
+  const syncInfo=state.portfolioSyncedAt?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${syncedAt}</div>`:'';
   const meta=state.portfolioMeta;
   const summaryHtml=meta&&meta.totalValue?`<div class="analytics-grid" style="margin-bottom:16px">
     <div class="metric-card"><div class="metric-label">Total portfolio</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.totalValue).toLocaleString('en-GB')}</div></div>
@@ -839,83 +839,65 @@ function renderPortfolio(){
     `<div class="section-label">Holdings (${sorted.length}) — by weight</div><div class="ticker-list" style="margin-bottom:60px">${holdingsHtml}</div>`;
 }
 
-function openSheetsSetup(){
+function openPortfolioPaste(){
   const root=document.getElementById('modalRoot');
-  const needsOAuth = !state.oauthRefreshToken;
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal">
-      <div class="modal-header"><div class="modal-title">Portfolio — Google Sheets</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
-      ${needsOAuth
-        ? `<div style="font-size:13px;color:var(--warn-txt);background:var(--warn-bg);padding:10px;border-radius:var(--r);margin-bottom:12px">Connect your Google account first (tap the Drive badge at the top).</div>`
-        : ''}
-      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
-        Paste your <strong>Spreadsheet ID</strong> — the string in the Sheets URL between <code style="font-family:var(--font-mono);font-size:11px;background:var(--surface3);padding:1px 4px;border-radius:3px">/d/</code> and <code style="font-family:var(--font-mono);font-size:11px;background:var(--surface3);padding:1px 4px;border-radius:3px">/edit</code>.
+      <div class="modal-header"><div class="modal-title">Update portfolio</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:12px">
+        In your Google Sheet → <strong>portfolio</strong> tab → File → Download → CSV.<br>Open the CSV in a text editor, select all, paste below.
+      </div>
+      <textarea id="portfolioCsvInput" style="width:100%;min-height:120px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:12px;font-family:var(--font-mono);color:var(--ink);background:var(--surface2);outline:none;resize:vertical" placeholder="symbol,name,sector,geography,weight_pct"></textarea>
+      <div class="field-row" style="margin-top:10px">
+        <div class="field-label">Total portfolio value £ <span style="opacity:.5">(optional)</span></div>
+        <input class="field-input" id="portfolioTotalInput" type="number" placeholder="347987" value="${state.portfolioMeta&&state.portfolioMeta.totalValue?state.portfolioMeta.totalValue:''}">
       </div>
       <div class="field-row">
-        <div class="field-label">Spreadsheet ID</div>
-        <input class="field-input" id="sheetsIdInput" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms" value="${state.sheetsId||''}">
+        <div class="field-label">Cash £ <span style="opacity:.5">(optional)</span></div>
+        <input class="field-input" id="portfolioCashInput" type="number" placeholder="9400" value="${state.portfolioMeta&&state.portfolioMeta.cashGbp?state.portfolioMeta.cashGbp:''}">
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" ${needsOAuth?'disabled':''} onclick="connectSheets()">Connect & sync</button>
+        <button class="btn btn-primary" onclick="importPortfolioCsv()">Import</button>
       </div>
     </div>
   </div>`;
 }
 
-function connectSheets(){
-  const id=(document.getElementById('sheetsIdInput')?.value||'').trim();
-  if(!id){showToast('Enter a spreadsheet ID');return;}
-  state.sheetsId=id;
-  save();closeModal();
-  syncFromSheets();
-}
-
-async function syncFromSheets(){
-  if(!state.sheetsId||!state.sheetsToken){showToast('Sheets not connected');return;}
-  showToast('Syncing portfolio…');
-  try{
-    const token = await getAccessToken();
-  if(!token){showToast('Not connected to Google — tap the Drive badge');return;}
-  const base=`https://sheets.googleapis.com/v4/spreadsheets/${state.sheetsId}/values`;
-  const hdrs={Authorization:`Bearer ${token}`};
-
-    // Read portfolio tab
-    const pRes=await fetch(`${base}/${encodeURIComponent('portfolio!A2:E200')}`,{headers:hdrs});
-    if(!pRes.ok){const e=await pRes.json();throw new Error(e.error?.message||pRes.status);}
-    const pData=await pRes.json();
-    const rows=pData.values||[];
-    state.portfolio=rows
-      .filter(r=>r[0]&&r[0].trim()&&!r[0].trim().toUpperCase().includes('TOTAL'))
-      .map(r=>({
-        symbol:          (r[0]||'').trim(),
-        name:            (r[1]||'').trim(),
-        sector:          (r[2]||'').trim(),
-        geography:       (r[3]||'').trim(),
-        weight_pct:      parseWeight(r[4]||''),
-      }));
-
-    // Read inputs tab: B2=date, B3=total portfolio value, B5=invested, B6=cash, B7=cash%
-    const iRes=await fetch(`${base}/${encodeURIComponent('inputs!B2:B14')}`,{headers:hdrs});
-    if(iRes.ok){
-      const iData=await iRes.json();
-      const vals=(iData.values||[]).map(r=>r[0]||'');
-      // B2=row0, B3=row1, B5=row3, B6=row4, B7=row5
-      state.portfolioMeta={
-        snapshotDate:   vals[0]||'',
-        totalValue:     parseMV(vals[1]||''),
-        investedValue:  parseMV(vals[3]||''),
-        cashGbp:        parseMV(vals[4]||''),
-        cashPct:        parseWeight(vals[5]||''),
-      };
-    }
-
-    state.portfolioSyncedAt=new Date().toISOString();
-    save();render();
-    showToast('Portfolio synced — '+state.portfolio.length+' holdings');
-  }catch(err){
-    showToast('Sheets sync failed: '+err.message);
-  }
+function importPortfolioCsv(){
+  const csv=(document.getElementById('portfolioCsvInput')?.value||'').trim();
+  if(!csv){showToast('Paste your portfolio CSV first');return;}
+  const totalVal=parseFloat(document.getElementById('portfolioTotalInput')?.value||'0')||0;
+  const cashVal=parseFloat(document.getElementById('portfolioCashInput')?.value||'0')||0;
+  const lines=csv.split('\n').map(l=>l.trim()).filter(Boolean);
+  const dataLines=lines[0].toLowerCase().includes('symbol')?lines.slice(1):lines;
+  const rows=dataLines.map(l=>{
+    const parts=[];let cur='';let inQ=false;
+    for(const ch of l){if(ch==='"'){inQ=!inQ;}else if(ch===','&&!inQ){parts.push(cur.trim());cur='';}else{cur+=ch;}}
+    parts.push(cur.trim());
+    return parts;
+  });
+  const portfolio=rows
+    .filter(r=>r[0]&&r[0].trim()&&!r[0].toUpperCase().includes('TOTAL'))
+    .map(r=>({
+      symbol:    (r[0]||'').trim().toUpperCase(),
+      name:      (r[1]||'').trim(),
+      sector:    (r[2]||'').trim(),
+      geography: (r[3]||'').trim(),
+      weight_pct:parseWeight(r[4]||''),
+    }));
+  if(!portfolio.length){showToast('No valid rows found — check format');return;}
+  state.portfolio=portfolio;
+  state.portfolioMeta={
+    totalValue:    totalVal,
+    cashGbp:       cashVal,
+    cashPct:       totalVal>0?cashVal/totalVal:0,
+    investedValue: totalVal>0?totalVal-cashVal:0,
+    snapshotDate:  new Date().toLocaleDateString('en-GB'),
+  };
+  state.portfolioSyncedAt=new Date().toISOString();
+  save();closeModal();render();
+  showToast('Portfolio updated — '+portfolio.length+' holdings');
 }
 
 function parseWeight(val){
@@ -1023,7 +1005,7 @@ function closeModal(){document.getElementById('modalRoot').innerHTML='';}
    OAUTH + DRIVE SYNC
 ══════════════════════════════════════ */
 const OAUTH_REDIRECT = location.origin + location.pathname;
-const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly';
+const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file';
 
 // Called on page load — complete the OAuth code exchange if we were redirected back
 (async function handleOAuthRedirect(){
