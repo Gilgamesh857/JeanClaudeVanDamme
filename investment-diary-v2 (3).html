@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1a6b3c" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1b18" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="invest.diary">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>invest.diary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Geist:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --ink:#1a1a1a;--ink2:#4a4a4a;--ink3:#8a8a8a;--surface:#ffffff;--surface2:#f7f6f3;--surface3:#f0ede8;
+    --border:rgba(0,0,0,0.08);--border2:rgba(0,0,0,0.14);
+    --accent:#1a6b3c;--accent2:#e8f5ee;--accent3:#c8e8d5;
+    --tag-bg:#eef4ff;--tag-txt:#2255aa;--hash-bg:#fff8e8;--hash-txt:#a05800;
+    --danger:#c0392b;--warn-bg:#fff3e0;--warn-txt:#b05000;
+    --conviction-1:#e8f0ff;--conviction-1t:#3355bb;
+    --conviction-2:#e8f5ee;--conviction-2t:#1a6b3c;
+    --conviction-3:#fff8e0;--conviction-3t:#a07000;
+    --conviction-4:#fff0e8;--conviction-4t:#b04000;
+    --conviction-5:#fce8e8;--conviction-5t:#a01515;
+    --r:10px;--r2:16px;--shadow:0 1px 4px rgba(0,0,0,0.06),0 4px 16px rgba(0,0,0,0.04);
+    --font-body:'Geist',sans-serif;--font-serif:'DM Serif Display',serif;--font-mono:'DM Mono',monospace;
+  }
+  @media(prefers-color-scheme:dark){
+    :root{
+      --ink:#e8e6e0;--ink2:#aaa89f;--ink3:#66645e;--surface:#1c1b18;--surface2:#242320;--surface3:#2c2b27;
+      --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
+      --accent:#4cae7a;--accent2:#0f2a1a;--accent3:#1a4030;
+      --tag-bg:#1a2240;--tag-txt:#7aaaf0;--hash-bg:#2a2010;--hash-txt:#e09020;
+      --conviction-1:#1a2240;--conviction-1t:#7aaaf0;
+      --conviction-2:#0f2a1a;--conviction-2t:#4cae7a;
+      --conviction-3:#2a2010;--conviction-3t:#e09020;
+      --conviction-4:#2a1a10;--conviction-4t:#e07040;
+      --conviction-5:#2a1010;--conviction-5t:#e05050;
+      --shadow:0 1px 4px rgba(0,0,0,0.3),0 4px 16px rgba(0,0,0,0.2);
+    }
+  }
+  body{font-family:var(--font-body);background:var(--surface2);color:var(--ink);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  #app{display:flex;flex-direction:column;max-width:480px;margin:0 auto;min-height:100vh;background:var(--surface);position:relative}
+  .topbar{padding:14px 16px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:100;display:flex;flex-direction:column;gap:8px}
+  .topbar-row{display:flex;align-items:center;justify-content:space-between}
+  .brand{font-family:var(--font-serif);font-size:20px;color:var(--ink);letter-spacing:-0.3px}
+  .brand span{color:var(--accent)}
+  .sync-badge{font-size:11px;font-family:var(--font-mono);padding:3px 8px;border-radius:20px;border:1px solid var(--border2);color:var(--ink3);cursor:pointer;display:flex;align-items:center;gap:4px;transition:all .2s}
+  .sync-badge:hover{border-color:var(--accent);color:var(--accent)}
+  .sync-badge.syncing{color:var(--accent);border-color:var(--accent3)}
+  .sync-badge.error{color:var(--danger);border-color:var(--danger)}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+  .dot.pulse{animation:pulse 1.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .search-bar{display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:var(--r);padding:0 10px;border:1px solid var(--border)}
+  .search-bar input{flex:1;background:transparent;border:none;outline:none;font-size:14px;font-family:var(--font-body);color:var(--ink);padding:8px 0}
+  .search-bar input::placeholder{color:var(--ink3)}
+  .search-icon{font-size:14px;color:var(--ink3)}
+  .tabs{display:flex;padding:0 16px;border-bottom:1px solid var(--border);gap:0;background:var(--surface);overflow-x:auto;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{padding:10px 14px;font-size:13px;font-weight:500;color:var(--ink3);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+  .scroll-area{flex:1;overflow-y:auto;padding:16px}
+  .compose-card{background:var(--surface);border-radius:var(--r2);border:1px solid var(--border2);padding:14px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .compose-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px}
+  .compose-area{width:100%;min-height:80px;border:none;outline:none;font-size:15px;font-family:var(--font-body);color:var(--ink);background:transparent;resize:none;line-height:1.6}
+  .compose-area::placeholder{color:var(--ink3)}
+  .compose-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+  .preview-tags{display:flex;flex-wrap:wrap;gap:4px;flex:1}
+  .tag{font-size:12px;font-family:var(--font-mono);padding:2px 8px;border-radius:20px;cursor:pointer;transition:opacity .15s}
+  .tag:hover{opacity:.75}
+  .tag.ticker{background:var(--tag-bg);color:var(--tag-txt)}
+  .tag.hash{background:var(--hash-bg);color:var(--hash-txt)}
+  .btn{padding:7px 14px;border-radius:var(--r);border:none;cursor:pointer;font-size:13px;font-family:var(--font-body);font-weight:500;transition:all .15s}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{opacity:.88}
+  .btn-primary:disabled{opacity:.45;cursor:not-allowed}
+  .btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--ink2)}
+  .btn-ghost:hover{background:var(--surface2)}
+  .btn-sm{padding:5px 10px;font-size:12px}
+  .entry-card{background:var(--surface);border-radius:var(--r2);border:1px solid var(--border);padding:14px;margin-bottom:10px;box-shadow:var(--shadow);transition:box-shadow .2s}
+  .entry-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.09),0 6px 24px rgba(0,0,0,0.06)}
+  .entry-meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .entry-date{font-size:11px;font-family:var(--font-mono);color:var(--ink3)}
+  .entry-actions{display:flex;gap:6px}
+  .icon-btn{background:none;border:none;cursor:pointer;color:var(--ink3);font-size:14px;padding:2px 4px;border-radius:4px;transition:color .15s}
+  .icon-btn:hover{color:var(--ink)}
+  .entry-body{font-size:14px;line-height:1.65;color:var(--ink2);white-space:pre-wrap;word-break:break-word}
+  .entry-body strong{font-weight:500;color:var(--ink)}
+  .entry-body em{font-style:italic}
+  .entry-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+  .entry-news-btn{display:flex;align-items:center;gap:5px;margin-top:10px;padding:6px 10px;border-radius:var(--r);border:1px dashed var(--border2);background:transparent;cursor:pointer;font-size:12px;font-family:var(--font-mono);color:var(--ink3);width:100%;justify-content:center;transition:all .2s}
+  .entry-news-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent2)}
+  .news-panel{background:var(--surface2);border-radius:var(--r);padding:12px;margin-top:10px;border:1px solid var(--border)}
+  .news-panel-header{font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
+  .news-item{padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer}
+  .news-item:last-child{border-bottom:none}
+  .news-item-title{font-size:13px;color:var(--ink);font-weight:500;margin-bottom:2px}
+  .news-item-meta{font-size:11px;color:var(--ink3);font-family:var(--font-mono)}
+  .news-config{padding:8px;background:var(--warn-bg);border-radius:var(--r);font-size:12px;color:var(--warn-txt);line-height:1.5}
+  .empty-state{text-align:center;padding:48px 24px;color:var(--ink3)}
+  .empty-icon{font-size:36px;margin-bottom:12px;opacity:.4}
+  .empty-title{font-family:var(--font-serif);font-size:18px;color:var(--ink2);margin-bottom:6px}
+  .empty-body{font-size:13px;line-height:1.6}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:16px}
+  .cal-day-label{font-size:10px;font-family:var(--font-mono);color:var(--ink3);text-align:center;padding:2px 0}
+  .cal-cell{aspect-ratio:1;border-radius:5px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;font-family:var(--font-mono);transition:all .15s;border:1px solid transparent;position:relative}
+  .cal-cell.empty{background:transparent;cursor:default}
+  .cal-cell.no-entry{background:var(--surface3);color:var(--ink3)}
+  .cal-cell.has-entry-1{background:var(--accent3);color:var(--accent)}
+  .cal-cell.has-entry-2{background:#9dd4b5;color:#0f5c30}
+  .cal-cell.has-entry-3{background:#4cae7a;color:#fff}
+  .cal-cell.today{border-color:var(--accent);font-weight:500}
+  .cal-cell:hover:not(.empty){box-shadow:0 0 0 2px var(--accent3)}
+  .cal-month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .cal-month-label{font-family:var(--font-serif);font-size:18px;color:var(--ink)}
+  .day-entries-preview{background:var(--surface2);border-radius:var(--r);padding:10px;margin-top:8px;border:1px solid var(--border)}
+  .day-entries-preview h4{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+  .analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+  .metric-card{background:var(--surface2);border-radius:var(--r);padding:12px;border:1px solid var(--border)}
+  .metric-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+  .metric-value{font-size:24px;font-weight:500;color:var(--ink);font-family:var(--font-serif)}
+  .metric-sub{font-size:11px;color:var(--ink3);margin-top:2px}
+  .ticker-list{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+  .ticker-row{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--surface);border-radius:var(--r);border:1px solid var(--border);cursor:pointer;transition:all .2s}
+  .ticker-row:hover{border-color:var(--accent3);background:var(--accent2)}
+  .ticker-name{font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)}
+  .ticker-count{font-size:12px;color:var(--ink3);font-family:var(--font-mono)}
+  .bar-bg{flex:1;height:4px;background:var(--surface3);border-radius:2px;margin:0 12px}
+  .bar-fill{height:100%;border-radius:2px;background:var(--accent)}
+  .section-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+  .weekly-digest-btn{width:100%;padding:12px;background:var(--accent2);border:1px dashed var(--accent3);border-radius:var(--r2);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--accent);display:flex;align-items:center;justify-content:center;gap:6px;transition:all .2s;margin-bottom:16px}
+  .weekly-digest-btn:hover{background:var(--accent3)}
+  .filter-chip-row{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
+  .filter-chip{font-size:11px;font-family:var(--font-mono);padding:3px 10px;border-radius:20px;border:1px solid var(--border2);cursor:pointer;color:var(--ink2);transition:all .15s}
+  .filter-chip.active{background:var(--tag-bg);color:var(--tag-txt);border-color:var(--tag-txt)}
+  .filter-chip.hash-chip.active{background:var(--hash-bg);color:var(--hash-txt);border-color:var(--hash-txt)}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:200;display:flex;align-items:flex-end;justify-content:center}
+  .modal{background:var(--surface);border-radius:var(--r2) var(--r2) 0 0;padding:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto}
+  .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .modal-title{font-family:var(--font-serif);font-size:18px}
+  .modal textarea{width:100%;min-height:100px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:14px;font-family:var(--font-body);color:var(--ink);background:var(--surface2);outline:none;resize:vertical}
+  .modal textarea:focus{border-color:var(--accent)}
+  .modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+  .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--surface);font-size:13px;font-family:var(--font-mono);padding:8px 16px;border-radius:20px;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none}
+  .toast.show{opacity:1}
+  .fab{position:fixed;bottom:20px;right:max(16px,calc(50% - 240px + 16px));width:48px;height:48px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:22px;box-shadow:0 4px 16px rgba(0,100,50,0.35);display:flex;align-items:center;justify-content:center;z-index:150;transition:all .2s}
+  .fab:hover{transform:scale(1.07)}
+  mark{background:rgba(255,200,50,.35);border-radius:2px}
+
+  /* ── Memo styles ── */
+  .memo-list{display:flex;flex-direction:column;gap:10px}
+  .memo-card{background:var(--surface);border-radius:var(--r2);border:1px solid var(--border);padding:14px;box-shadow:var(--shadow);cursor:pointer;transition:box-shadow .2s,border-color .2s}
+  .memo-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.09),0 6px 24px rgba(0,0,0,0.06);border-color:var(--border2)}
+  .memo-card-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px}
+  .memo-ticker{font-family:var(--font-mono);font-size:16px;font-weight:500;color:var(--tag-txt)}
+  .memo-name{font-size:13px;color:var(--ink2);margin-top:1px}
+  .conviction-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-family:var(--font-mono);padding:3px 9px;border-radius:20px;font-weight:500;white-space:nowrap}
+  .conviction-1{background:var(--conviction-1);color:var(--conviction-1t)}
+  .conviction-2{background:var(--conviction-2);color:var(--conviction-2t)}
+  .conviction-3{background:var(--conviction-3);color:var(--conviction-3t)}
+  .conviction-4{background:var(--conviction-4);color:var(--conviction-4t)}
+  .conviction-5{background:var(--conviction-5);color:var(--conviction-5t)}
+  .memo-card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px}
+  .memo-card-reviewed{font-size:11px;font-family:var(--font-mono);color:var(--ink3)}
+  .memo-card-sections{display:flex;flex-wrap:wrap;gap:4px}
+  .memo-section-pip{font-size:11px;font-family:var(--font-mono);padding:1px 6px;border-radius:4px;background:var(--surface3);color:var(--ink3)}
+  .memo-snippet{font-size:13px;color:var(--ink3);line-height:1.5;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  /* full memo view */
+  .memo-view{display:flex;flex-direction:column;gap:0}
+  .memo-view-header{padding:16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:10}
+  .memo-view-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .memo-view-ticker{font-family:var(--font-serif);font-size:26px;color:var(--ink)}
+  .memo-view-name{font-size:13px;color:var(--ink3);font-family:var(--font-mono);margin-bottom:8px}
+  .memo-view-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .memo-view-body{padding:16px;display:flex;flex-direction:column;gap:4px}
+  .memo-section{border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:8px}
+  .memo-section-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;background:var(--surface2);user-select:none}
+  .memo-section-head:hover{background:var(--surface3)}
+  .memo-section-label{font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);font-weight:500}
+  .memo-section-chevron{font-size:11px;color:var(--ink3);transition:transform .2s}
+  .memo-section-chevron.open{transform:rotate(180deg)}
+  .memo-section-content{padding:12px 14px;background:var(--surface)}
+  .memo-section-content textarea{width:100%;min-height:80px;border:none;outline:none;font-size:14px;font-family:var(--font-body);color:var(--ink);background:transparent;resize:none;line-height:1.65}
+  .memo-section-content textarea::placeholder{color:var(--ink3)}
+  .memo-section-rendered{font-size:14px;line-height:1.65;color:var(--ink2);white-space:pre-wrap;word-break:break-word;min-height:24px}
+  .memo-section-rendered:empty::after{content:attr(data-placeholder);color:var(--ink3);font-style:italic}
+  .memo-edit-btn{font-size:11px;font-family:var(--font-mono);padding:3px 8px;border-radius:6px;border:1px solid var(--border2);background:transparent;cursor:pointer;color:var(--ink3);transition:all .15s}
+  .memo-edit-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .memo-section-edit-footer{display:flex;justify-content:flex-end;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+  .conviction-selector{display:flex;gap:6px;flex-wrap:wrap}
+  .conviction-opt{width:36px;height:36px;border-radius:50%;border:2px solid var(--border2);cursor:pointer;font-size:13px;font-family:var(--font-mono);font-weight:500;display:flex;align-items:center;justify-content:center;transition:all .15s;background:var(--surface2);color:var(--ink2)}
+  .conviction-opt:hover{border-color:var(--accent)}
+  .conviction-opt.selected{border-width:2px}
+  .conviction-opt.sel-1{background:var(--conviction-1);color:var(--conviction-1t);border-color:var(--conviction-1t)}
+  .conviction-opt.sel-2{background:var(--conviction-2);color:var(--conviction-2t);border-color:var(--conviction-2t)}
+  .conviction-opt.sel-3{background:var(--conviction-3);color:var(--conviction-3t);border-color:var(--conviction-3t)}
+  .conviction-opt.sel-4{background:var(--conviction-4);color:var(--conviction-4t);border-color:var(--conviction-4t)}
+  .conviction-opt.sel-5{background:var(--conviction-5);color:var(--conviction-5t);border-color:var(--conviction-5t)}
+  .log-feed{margin-top:4px}
+  .log-feed-header{font-size:11px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);padding:10px 14px 6px;border-top:1px solid var(--border)}
+  .log-feed-empty{font-size:13px;color:var(--ink3);font-style:italic;padding:12px 14px}
+  .log-feed-item{padding:10px 14px;border-top:1px solid var(--border)}
+  .log-feed-date{font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:4px}
+  .log-feed-body{font-size:13px;color:var(--ink2);line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  .back-btn{display:flex;align-items:center;gap:5px;font-size:13px;font-family:var(--font-mono);color:var(--ink3);cursor:pointer;padding:2px 0;transition:color .15s;background:none;border:none}
+  .back-btn:hover{color:var(--accent)}
+  .memo-add-section-btn{width:100%;padding:10px;background:transparent;border:1px dashed var(--border2);border-radius:var(--r);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--ink3);display:flex;align-items:center;justify-content:center;gap:5px;transition:all .2s;margin-top:4px;margin-bottom:8px}
+  .memo-add-section-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .field-row{margin-bottom:12px}
+  .field-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
+  .field-input{width:100%;padding:9px 12px;border:1px solid var(--border2);border-radius:var(--r);font-size:14px;font-family:var(--font-body);color:var(--ink);background:var(--surface2);outline:none}
+  .field-input:focus{border-color:var(--accent)}
+  .chip-row{display:flex;gap:6px;flex-wrap:wrap}
+  .section-chip{font-size:11px;font-family:var(--font-mono);padding:4px 10px;border-radius:20px;border:1px solid var(--border2);cursor:pointer;color:var(--ink2);transition:all .15s;background:var(--surface2)}
+  .section-chip.active{background:var(--tag-bg);color:var(--tag-txt);border-color:var(--tag-txt)}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="topbar">
+    <div class="topbar-row">
+      <div class="brand">invest<span>.</span>diary</div>
+      <div class="sync-badge" id="syncBadge" onclick="syncNow()">
+        <span class="dot" id="syncDot"></span>
+        <span id="syncLabel">Connect Drive</span>
+      </div>
+    </div>
+    <div class="search-bar" id="searchBarWrap">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="searchInput" placeholder="Search entries, $MSFT, #earnings…" oninput="onSearch()">
+    </div>
+    <div class="filter-chip-row" id="filterChips"></div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" onclick="setTab('log')">Log</div>
+    <div class="tab" onclick="setTab('memos')">Memos</div>
+    <div class="tab" onclick="setTab('portfolio')">Portfolio</div>
+    <div class="tab" onclick="setTab('calendar')">Calendar</div>
+    <div class="tab" onclick="setTab('tickers')">Tickers</div>
+    <div class="tab" onclick="setTab('analytics')">Analytics</div>
+  </div>
+  <div class="scroll-area" id="mainContent"></div>
+</div>
+<div class="toast" id="toast"></div>
+<button class="fab" id="fab" onclick="onFab()" title="New entry">+</button>
+<div id="modalRoot"></div>
+<script>
+const STORAGE_KEY='invest_diary_v2';
+const MEMO_SECTIONS=['thesis','risks','catalysts','management','funding','valuation','technicals','reasons_to_sell','description'];
+const SECTION_LABELS={thesis:'Investment Thesis',risks:'Risks',catalysts:'Catalysts',management:'Management & Shareholders',funding:'Funding',valuation:'Valuation',technicals:'Technicals',reasons_to_sell:'Reasons to Sell',description:'Description'};
+
+let state={
+  entries:[],memos:[],
+  driveFileId:null,driveSynced:false,driveToken:null,
+  sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
+  oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
+  activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
+  calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),selectedDay:null,
+  activeMemoId:null
+};
+
+function load(){
+  try{
+    const raw=localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      const s=JSON.parse(raw);
+      state.entries=s.entries||[];state.memos=s.memos||[];
+      state.driveFileId=s.driveFileId||null;
+      state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
+      state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
+      state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
+      state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
+    }
+    const oldRaw=localStorage.getItem('invest_diary_v1');
+    if(oldRaw&&!state.entries.length){const old=JSON.parse(oldRaw);state.entries=old.entries||[];}
+  }catch(e){}
+}
+function save(){
+  localStorage.setItem(STORAGE_KEY,JSON.stringify({
+    entries:state.entries,memos:state.memos,driveFileId:state.driveFileId,
+    sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
+    portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
+    oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
+    oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
+  }));
+}
+load();
+
+function extractTickers(text){return[...new Set((text.match(/\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)/g)||[]).map(t=>t.toUpperCase()))];}
+function extractHashes(text){return[...new Set((text.match(/#([a-zA-Z][a-zA-Z0-9_]*)/g)||[]).map(h=>h.toLowerCase()))];}
+function renderMd(text){
+  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/`(.+?)`/g,'<code style="font-family:var(--font-mono);font-size:12px;background:var(--surface3);padding:1px 4px;border-radius:3px">$1</code>')
+    .replace(/\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)/g,'<span style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)">$$$1</span>')
+    .replace(/#([a-zA-Z][a-zA-Z0-9_]*)/g,'<span style="font-family:var(--font-mono);color:var(--hash-txt)">#$1</span>');
+}
+function highlight(text,query){
+  if(!query)return text;
+  const esc=query.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  return text.replace(new RegExp(`(${esc})`,'gi'),'<mark>$1</mark>');
+}
+function fmtDate(iso){
+  const d=new Date(iso);
+  return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+' · '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
+function fmtDateShort(iso){return new Date(iso).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}
+function fmtDateRelative(iso){
+  const diff=Date.now()-new Date(iso).getTime();
+  const days=Math.floor(diff/86400000);
+  if(days===0)return'Today';if(days===1)return'Yesterday';if(days<7)return`${days}d ago`;
+  if(days<30)return`${Math.floor(days/7)}w ago`;if(days<365)return`${Math.floor(days/30)}mo ago`;
+  return`${Math.floor(days/365)}y ago`;
+}
+function convictionLabel(n){return['','Watching','Interested','Conviction','High Conv.','Core'][n]||'';}
+function allTickers(){const map={};state.entries.forEach(e=>e.tickers.forEach(t=>{map[t]=(map[t]||0)+1;}));return Object.entries(map).sort((a,b)=>b[1]-a[1]);}
+function allHashes(){const map={};state.entries.forEach(e=>e.hashes.forEach(h=>{map[h]=(map[h]||0)+1;}));return Object.entries(map).sort((a,b)=>b[1]-a[1]);}
+function filteredEntries(){
+  let list=[...state.entries].sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+  const q=state.searchQuery.trim().toLowerCase();
+  if(q)list=list.filter(e=>e.text.toLowerCase().includes(q)||e.tickers.some(t=>t.toLowerCase().includes(q))||e.hashes.some(h=>h.toLowerCase().includes(q)));
+  if(state.filterTickers.length)list=list.filter(e=>state.filterTickers.every(t=>e.tickers.includes(t)));
+  if(state.filterHashes.length)list=list.filter(e=>state.filterHashes.every(h=>e.hashes.includes(h)));
+  return list;
+}
+function setTab(tab){
+  state.activeTab=tab;
+  state.activeMemoId=null;
+  document.querySelectorAll('.tab').forEach((el,i)=>{
+    el.classList.toggle('active',['log','memos','portfolio','calendar','tickers','analytics'][i]===tab);
+  });
+  // show/hide search bar
+  const sw=document.getElementById('searchBarWrap');
+  if(sw)sw.style.display=(tab==='memos'||tab==='portfolio'?'none':'flex');
+  const fc=document.getElementById('filterChips');
+  if(fc&&(tab==='memos'||tab==='portfolio'))fc.innerHTML='';
+  render();
+}
+function onSearch(){state.searchQuery=document.getElementById('searchInput').value;render();}
+function toggleFilter(type,val){
+  const arr=type==='ticker'?state.filterTickers:state.filterHashes;
+  const idx=arr.indexOf(val);if(idx>=0)arr.splice(idx,1);else arr.push(val);render();
+}
+function renderFilterChips(){
+  if(state.activeTab==='memos')return;
+  const chips=document.getElementById('filterChips');
+  const tickers=allTickers().slice(0,8);const hashes=allHashes().slice(0,5);
+  if(!tickers.length&&!hashes.length){chips.innerHTML='';return;}
+  chips.innerHTML=tickers.map(([t])=>`<div class="filter-chip ${state.filterTickers.includes(t)?'active':''}" onclick="toggleFilter('ticker','${t}')">${t}</div>`).join('')
+    +hashes.map(([h])=>`<div class="filter-chip hash-chip ${state.filterHashes.includes(h)?'active':''}" onclick="toggleFilter('hash','${h}')">${h}</div>`).join('');
+}
+function render(){
+  renderFilterChips();
+  const el=document.getElementById('mainContent');
+  if(state.activeTab==='log')el.innerHTML=renderLog();
+  else if(state.activeTab==='memos')renderMemosTab(el);
+  else if(state.activeTab==='portfolio')el.innerHTML=renderPortfolio();
+  else if(state.activeTab==='calendar')el.innerHTML=renderCalendar();
+  else if(state.activeTab==='tickers')el.innerHTML=renderTickers();
+  else el.innerHTML=renderAnalytics();
+  // FAB
+  const fab=document.getElementById('fab');
+  if(state.activeTab==='memos'&&state.activeMemoId){fab.style.display='none';}
+  else if(state.activeTab==='memos'){fab.textContent='+';fab.style.display='flex';}
+  else{fab.textContent='+';fab.style.display='flex';}
+}
+function onFab(){
+  if(state.activeTab==='memos')openNewMemoModal();
+  else openCompose();
+}
+
+/* ══════════════════════════════════════
+   LOG TAB
+══════════════════════════════════════ */
+function renderLog(){
+  const entries=filteredEntries();
+  const composeHtml=`<div class="compose-card" id="composeCard" style="display:none">
+    <div class="compose-label">Quick log</div>
+    <textarea class="compose-area" id="composeText" placeholder="What's on your mind? Try: Bought more $MSFT today — strong earnings #thesis #tech" oninput="onComposeInput()" rows="4"></textarea>
+    <div class="preview-tags" id="composeTags"></div>
+    <div class="compose-footer">
+      <div></div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost" onclick="closeCompose()">Cancel</button>
+        <button class="btn btn-primary" id="submitBtn" onclick="submitEntry()" disabled>Save entry</button>
+      </div>
+    </div>
+  </div>`;
+  if(!entries.length){
+    return composeHtml+`<div class="empty-state"><div class="empty-icon">📓</div><div class="empty-title">Your diary is empty</div><div class="empty-body">Tap + to log your first investment note.<br>Use <code style="font-family:var(--font-mono);font-size:12px">$MSFT</code> for tickers and <code style="font-family:var(--font-mono);font-size:12px">#earnings</code> for tags.</div></div>`;
+  }
+  return composeHtml+entries.map(e=>renderEntry(e)).join('');
+}
+function renderEntry(e,compact=false){
+  const tickerTags=e.tickers.map(t=>`<span class="tag ticker" onclick="openTickerMemo('${t}')">${t}</span>`).join('');
+  const hashTags=e.hashes.map(h=>`<span class="tag hash" onclick="toggleFilter('hash','${h}')">${h}</span>`).join('');
+  const bodyHtml=highlight(renderMd(e.text),state.searchQuery);
+  const newsSection=e.showNews?renderNewsPanel(e):'';
+  if(compact)return`<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+    <div class="entry-date">${fmtDate(e.ts)}</div>
+    <div class="entry-body" style="font-size:13px;margin-top:4px">${bodyHtml}</div>
+    <div class="entry-tags" style="margin-top:6px">${tickerTags}${hashTags}</div>
+  </div>`;
+  return`<div class="entry-card" id="entry-${e.id}">
+    <div class="entry-meta">
+      <div class="entry-date">${fmtDate(e.ts)}</div>
+      <div class="entry-actions">
+        <button class="icon-btn" onclick="editEntry('${e.id}')" title="Edit">✎</button>
+        <button class="icon-btn" onclick="deleteEntry('${e.id}')" title="Delete">⊗</button>
+      </div>
+    </div>
+    <div class="entry-body">${bodyHtml}</div>
+    <div class="entry-tags">${tickerTags}${hashTags}</div>
+    ${e.tickers.length?`<button class="entry-news-btn" onclick="toggleNews('${e.id}')">${e.showNews?'▲ Hide news digest':'↓ Fetch news for '+e.tickers.join(', ')}</button>`:''}
+    ${newsSection}
+  </div>`;
+}
+function renderNewsPanel(e){
+  if(!e.newsItems){return`<div class="news-panel"><div class="news-panel-header">News digest — ${e.tickers.join(', ')}</div><div class="news-config"><strong>AI news digest</strong> — connect an API key to fetch and summarise recent news for these tickers.</div></div>`;}
+  return`<div class="news-panel"><div class="news-panel-header">News digest · ${fmtDateShort(e.newsTs)}</div>${e.newsItems.map(n=>`<div class="news-item"><div class="news-item-title">${n.title}</div><div class="news-item-meta">${n.source} · ${n.ticker}</div></div>`).join('')}</div>`;
+}
+
+/* ══════════════════════════════════════
+   MEMOS TAB
+══════════════════════════════════════ */
+function renderMemosTab(el){
+  if(state.activeMemoId){renderMemoView(el);return;}
+  // list view
+  if(!state.memos.length){
+    el.innerHTML=`<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">No memos yet</div><div class="empty-body">Tap + to create your first investment memo.<br>One memo per holding — your north star for conviction.</div></div>`;
+    return;
+  }
+  const sorted=[...state.memos].sort((a,b)=>(b.updatedAt||b.createdAt||'').localeCompare(a.updatedAt||a.createdAt||''));
+  el.innerHTML=`<div class="memo-list">${sorted.map(m=>renderMemoCard(m)).join('')}</div>`;
+}
+
+function renderMemoCard(m){
+  const cv=m.conviction||0;
+  const cvBadge=cv?`<span class="conviction-badge conviction-${cv}">${'●'.repeat(cv)} ${convictionLabel(cv)}</span>`:'<span class="conviction-badge" style="background:var(--surface3);color:var(--ink3)">No conviction set</span>';
+  const filledSections=MEMO_SECTIONS.filter(s=>m.sections&&m.sections[s]&&m.sections[s].trim());
+  const pips=filledSections.slice(0,4).map(s=>`<span class="memo-section-pip">${SECTION_LABELS[s].split(' ')[0]}</span>`).join('');
+  const snippet=filledSections.length?m.sections[filledSections[0]].slice(0,120):'';
+  return`<div class="memo-card" onclick="openMemo('${m.id}')">
+    <div class="memo-card-header">
+      <div>
+        <div class="memo-ticker">${m.ticker}</div>
+        ${m.name?`<div class="memo-name">${m.name}</div>`:''}
+      </div>
+      ${cvBadge}
+    </div>
+    ${snippet?`<div class="memo-snippet">${snippet}</div>`:''}
+    <div class="memo-card-footer">
+      <div class="memo-card-sections">${pips}</div>
+      <div class="memo-card-reviewed">${m.updatedAt?'Updated '+fmtDateRelative(m.updatedAt):'Never reviewed'}</div>
+    </div>
+  </div>`;
+}
+
+function openMemo(id){
+  state.activeMemoId=id;
+  document.getElementById('fab').style.display='none';
+  render();
+}
+
+function renderMemoView(el){
+  const memo=state.memos.find(m=>m.id===state.activeMemoId);
+  if(!memo){state.activeMemoId=null;render();return;}
+  const cv=memo.conviction||0;
+  const cvBadge=cv?`<span class="conviction-badge conviction-${cv}">${'●'.repeat(cv)} ${convictionLabel(cv)}</span>`:'<span class="conviction-badge" style="background:var(--surface3);color:var(--ink3)">Set conviction</span>';
+  // always show all sections
+  const sectionHtml=MEMO_SECTIONS.map(s=>renderMemoSection(memo,s)).join('');
+  // log feed
+  const tickerRaw=memo.ticker.replace(/^\$/,'');
+  const logEntries=[...state.entries]
+    .filter(e=>e.tickers.some(t=>t.replace(/^\$/,'')===tickerRaw||t===memo.ticker))
+    .sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+  const logFeedHtml=logEntries.length
+    ?logEntries.map(e=>`<div class="log-feed-item"><div class="log-feed-date">${fmtDate(e.ts)}</div><div class="log-feed-body">${renderMd(e.text)}</div></div>`).join('')
+    :`<div class="log-feed-empty">No log entries for ${memo.ticker} yet.</div>`;
+  el.innerHTML=`<div class="memo-view">
+    <div class="memo-view-header">
+      <div class="memo-view-title-row">
+        <button class="back-btn" onclick="closeMemoView()">← Memos</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost btn-sm" onclick="editMemoMeta('${memo.id}')">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteMemo('${memo.id}')">Delete</button>
+        </div>
+      </div>
+      <div class="memo-view-ticker">${memo.ticker}</div>
+      ${memo.name?`<div class="memo-view-name">${memo.name}</div>`:''}
+      <div class="memo-view-meta">
+        <span onclick="openConvictionPicker('${memo.id}')" style="cursor:pointer">${cvBadge}</span>
+        ${memo.updatedAt?`<span style="font-size:11px;font-family:var(--font-mono);color:var(--ink3)">Reviewed ${fmtDateRelative(memo.updatedAt)}</span>`:''}
+      </div>
+    </div>
+    <div class="memo-view-body">
+      ${sectionHtml}
+
+      <div class="log-feed">
+        <div class="log-feed-header">Log entries · ${memo.ticker} · ${logEntries.length} total</div>
+        ${logFeedHtml}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderMemoSection(memo,sectionKey){
+  const label=SECTION_LABELS[sectionKey];
+  const content=memo.sections?.[sectionKey]||'';
+  const editingKey=`editing_${memo.id}_${sectionKey}`;
+  const isEditing=window[editingKey];
+  return`<div class="memo-section" id="msec-${memo.id}-${sectionKey}">
+    <div class="memo-section-head" onclick="toggleMemoSection('${memo.id}','${sectionKey}')">
+      <span class="memo-section-label">${label}</span>
+      <span class="memo-section-chevron open" id="chev-${memo.id}-${sectionKey}">▼</span>
+    </div>
+    <div class="memo-section-content" id="msc-${memo.id}-${sectionKey}">
+      ${isEditing
+        ?`<textarea id="msta-${memo.id}-${sectionKey}" placeholder="Write your ${label.toLowerCase()} notes here…">${content.replace(/</g,'&lt;')}</textarea>
+           <div class="memo-section-edit-footer">
+             <button class="btn btn-ghost btn-sm" onclick="cancelSectionEdit('${memo.id}','${sectionKey}')">Cancel</button>
+             <button class="btn btn-primary btn-sm" onclick="saveSectionEdit('${memo.id}','${sectionKey}')">Save</button>
+           </div>`
+        :`<div class="memo-section-rendered" data-placeholder="Tap edit to add ${label.toLowerCase()} notes…">${content?renderMd(content):''}</div>
+           <div style="display:flex;justify-content:flex-end;margin-top:6px">
+             <button class="memo-edit-btn" onclick="startSectionEdit('${memo.id}','${sectionKey}')">Edit</button>
+           </div>`
+      }
+    </div>
+  </div>`;
+}
+
+function toggleMemoSection(memoId,sectionKey){
+  const content=document.getElementById(`msc-${memoId}-${sectionKey}`);
+  const chev=document.getElementById(`chev-${memoId}-${sectionKey}`);
+  if(!content)return;
+  const hidden=content.style.display==='none';
+  content.style.display=hidden?'block':'none';
+  if(chev)chev.classList.toggle('open',hidden);
+}
+
+function startSectionEdit(memoId,sectionKey){
+  window[`editing_${memoId}_${sectionKey}`]=true;
+  const el=document.getElementById('mainContent');
+  renderMemoView(el);
+  setTimeout(()=>{
+    const ta=document.getElementById(`msta-${memoId}-${sectionKey}`);
+    if(ta){ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);}
+  },50);
+}
+function cancelSectionEdit(memoId,sectionKey){
+  window[`editing_${memoId}_${sectionKey}`]=false;
+  renderMemoView(document.getElementById('mainContent'));
+}
+function saveSectionEdit(memoId,sectionKey){
+  const ta=document.getElementById(`msta-${memoId}-${sectionKey}`);
+  if(!ta)return;
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  if(!memo.sections)memo.sections={};
+  memo.sections[sectionKey]=ta.value;
+  memo.updatedAt=new Date().toISOString();
+  window[`editing_${memoId}_${sectionKey}`]=false;
+  save();
+  showToast('Section saved');
+  renderMemoView(document.getElementById('mainContent'));
+  if(state.driveSynced)scheduleDriveSync();
+}
+
+function openConvictionPicker(memoId){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  const cv=memo.conviction||0;
+  const opts=[1,2,3,4,5].map(n=>`<div class="conviction-opt ${cv===n?`selected sel-${n}`:''}" onclick="setConviction('${memoId}',${n})">${n}</div>`).join('');
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Conviction — ${memo.ticker}</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="margin-bottom:12px;font-size:13px;color:var(--ink2)">1 = Watching · 2 = Interested · 3 = Conviction · 4 = High Conv. · 5 = Core</div>
+      <div class="conviction-selector">${opts}</div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="setConviction('${memoId}',0)">Clear</button><button class="btn btn-ghost" onclick="closeModal()">Done</button></div>
+    </div>
+  </div>`;
+}
+function setConviction(memoId,n){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  memo.conviction=n;memo.updatedAt=new Date().toISOString();
+  save();closeModal();
+  renderMemoView(document.getElementById('mainContent'));
+  showToast('Conviction updated');
+}
+
+
+
+function openNewMemoModal(){
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">New memo</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div class="field-row">
+        <div class="field-label">Ticker</div>
+        <input class="field-input" id="newMemoTicker" placeholder="$ASML" style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)" oninput="this.value=this.value.toUpperCase()">
+      </div>
+      <div class="field-row">
+        <div class="field-label">Company name <span style="opacity:.5">(optional)</span></div>
+        <input class="field-input" id="newMemoName" placeholder="ASML Holding N.V.">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="createMemo()">Create</button>
+      </div>
+    </div>
+  </div>`;
+  setTimeout(()=>document.getElementById('newMemoTicker')?.focus(),100);
+}
+function createMemo(){
+  let ticker=(document.getElementById('newMemoTicker')?.value||'').trim().toUpperCase();
+  const name=(document.getElementById('newMemoName')?.value||'').trim();
+  if(!ticker){showToast('Enter a ticker');return;}
+  if(!ticker.startsWith('$'))ticker='$'+ticker;
+  if(state.memos.find(m=>m.ticker===ticker)){showToast('Memo already exists for '+ticker);return;}
+  const sections={};
+  MEMO_SECTIONS.forEach(s=>{sections[s]='';});
+  const memo={
+    id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    ticker,name,conviction:0,sections,
+    createdAt:new Date().toISOString(),updatedAt:null
+  };
+  state.memos.push(memo);
+  save();closeModal();
+  state.activeMemoId=memo.id;
+  render();
+  showToast('Memo created');
+  if(state.driveSynced)scheduleDriveSync();
+}
+
+function editMemoMeta(memoId){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Edit memo</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div class="field-row">
+        <div class="field-label">Ticker</div>
+        <input class="field-input" id="editMemoTicker" value="${memo.ticker}" style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)" oninput="this.value=this.value.toUpperCase()">
+      </div>
+      <div class="field-row">
+        <div class="field-label">Company name</div>
+        <input class="field-input" id="editMemoName" value="${memo.name||''}">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveMemoMeta('${memoId}')">Save</button>
+      </div>
+    </div>
+  </div>`;
+}
+function saveMemoMeta(memoId){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  let ticker=(document.getElementById('editMemoTicker')?.value||'').trim().toUpperCase();
+  if(!ticker){showToast('Ticker required');return;}
+  if(!ticker.startsWith('$'))ticker='$'+ticker;
+  memo.ticker=ticker;
+  memo.name=(document.getElementById('editMemoName')?.value||'').trim();
+  memo.updatedAt=new Date().toISOString();
+  save();closeModal();
+  renderMemoView(document.getElementById('mainContent'));
+  showToast('Memo updated');
+}
+
+function deleteMemo(memoId){
+  if(!confirm('Delete this memo? This cannot be undone.'))return;
+  state.memos=state.memos.filter(m=>m.id!==memoId);
+  state.activeMemoId=null;save();render();showToast('Memo deleted');
+  if(state.driveSynced)scheduleDriveSync();
+}
+
+function closeMemoView(){
+  state.activeMemoId=null;
+  document.getElementById('fab').style.display='flex';
+  render();
+}
+
+// Open memo from ticker chip in log
+function openTickerMemo(ticker){
+  const t=ticker.startsWith('$')?ticker:'$'+ticker;
+  const memo=state.memos.find(m=>m.ticker===t||m.ticker===ticker);
+  if(memo){state.activeMemoId=memo.id;setTab('memos');}
+  else{
+    // offer to create
+    const root=document.getElementById('modalRoot');
+    root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <div class="modal-header"><div class="modal-title">${ticker}</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+        <div style="font-size:13px;color:var(--ink2);margin-bottom:14px">No memo exists for <strong>${ticker}</strong> yet.</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost" style="flex:1" onclick="closeModal();toggleFilter('ticker','${ticker}')">Filter logs</button>
+          <button class="btn btn-primary" style="flex:1" onclick="closeModal();prefillNewMemo('${ticker}')">Create memo</button>
+        </div>
+      </div>
+    </div>`;
+  }
+}
+function prefillNewMemo(ticker){
+  setTab('memos');
+  setTimeout(()=>{
+    openNewMemoModal();
+    setTimeout(()=>{
+      const ti=document.getElementById('newMemoTicker');
+      if(ti){ti.value=ticker.startsWith('$')?ticker.slice(1):ticker;}
+    },50);
+  },50);
+}
+
+/* ══════════════════════════════════════
+   CALENDAR TAB
+══════════════════════════════════════ */
+function renderCalendar(){
+  const year=state.calYear,month=state.calMonth;
+  const monthName=new Date(year,month,1).toLocaleString('en-GB',{month:'long',year:'numeric'});
+  const firstDay=new Date(year,month,1).getDay();
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const today=new Date();
+  const todayStr=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  const entriesByDay={};
+  state.entries.forEach(e=>{const d=new Date(e.ts);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;entriesByDay[key]=(entriesByDay[key]||0)+1;});
+  const dayLabels=['Su','Mo','Tu','We','Th','Fr','Sa'].map(d=>`<div class="cal-day-label">${d}</div>`).join('');
+  let cells='';
+  for(let i=0;i<firstDay;i++)cells+=`<div class="cal-cell empty"></div>`;
+  for(let d=1;d<=daysInMonth;d++){
+    const key=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const cnt=entriesByDay[key]||0;
+    const cls=cnt===0?'no-entry':cnt===1?'has-entry-1':cnt===2?'has-entry-2':'has-entry-3';
+    const isToday=key===todayStr;
+    cells+=`<div class="cal-cell ${cls}${isToday?' today':''}" onclick="selectDay('${key}')" title="${cnt} entr${cnt===1?'y':'ies'}">${d}</div>`;
+  }
+  let dayPreview='';
+  if(state.selectedDay){
+    const dayEntries=state.entries.filter(e=>{const d=new Date(e.ts);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return key===state.selectedDay;});
+    if(dayEntries.length){dayPreview=`<div class="day-entries-preview"><h4>${new Date(state.selectedDay).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})} · ${dayEntries.length} entr${dayEntries.length===1?'y':'ies'}</h4>${dayEntries.map(e=>renderEntry(e,true)).join('')}</div>`;}
+    else{dayPreview=`<div class="day-entries-preview"><h4>No entries on this day</h4></div>`;}
+  }
+  return`<div class="cal-month-nav"><button class="btn btn-ghost" onclick="shiftMonth(-1)">← Prev</button><div class="cal-month-label">${monthName}</div><button class="btn btn-ghost" onclick="shiftMonth(1)">Next →</button></div><div class="cal-grid">${dayLabels}${cells}</div>${dayPreview}`;
+}
+function selectDay(key){state.selectedDay=state.selectedDay===key?null:key;render();}
+function shiftMonth(delta){state.calMonth+=delta;if(state.calMonth>11){state.calMonth=0;state.calYear++;}if(state.calMonth<0){state.calMonth=11;state.calYear--;}state.selectedDay=null;render();}
+
+/* ══════════════════════════════════════
+   TICKERS TAB
+══════════════════════════════════════ */
+function renderTickers(){
+  const tickers=allTickers();const hashes=allHashes();
+  if(!tickers.length&&!hashes.length)return`<div class="empty-state"><div class="empty-icon">🏷</div><div class="empty-title">No tags yet</div><div class="empty-body">Add entries with <code style="font-family:var(--font-mono);font-size:12px">$TICKER</code> or <code style="font-family:var(--font-mono);font-size:12px">#tag</code>.</div></div>`;
+  const max=tickers[0]?.[1]||1;
+  const weeklyBtn=`<button class="weekly-digest-btn" onclick="weeklyDigest()">↓ Generate weekly digest for all tickers</button>`;
+  const tickerList=tickers.length?`<div class="section-label" style="margin-top:0">Stock tickers</div><div class="ticker-list">${tickers.map(([t,c])=>{const hasMemo=state.memos.some(m=>m.ticker===t||m.ticker==='$'+t);return`<div class="ticker-row" onclick="openTickerMemo('${t}')"><div class="ticker-name">${t}${hasMemo?` <span style="font-size:10px;opacity:.5">memo</span>`:''}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/max*100)}%"></div></div><div class="ticker-count">${c} entr${c===1?'y':'ies'}</div></div>`;}).join('')}</div>`:'';
+  const hashList=hashes.length?`<div class="section-label">Manual tags</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">${hashes.map(([h,c])=>`<div class="tag hash" onclick="filterByHash('${h}')" style="padding:4px 12px;font-size:13px">${h} <span style="opacity:.6">${c}</span></div>`).join('')}</div>`:'';
+  return weeklyBtn+tickerList+hashList;
+}
+function filterByTicker(t){state.filterTickers=[t];state.filterHashes=[];setTab('log');}
+function filterByHash(h){state.filterHashes=[h];state.filterTickers=[];setTab('log');}
+function weeklyDigest(){const tickers=allTickers().map(([t])=>t);if(!tickers.length){showToast('No tickers logged yet');return;}openNewsDigestModal(tickers);}
+function openNewsDigestModal(tickers){const root=document.getElementById('modalRoot');root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Weekly digest</div><button class="icon-btn" onclick="closeModal()">✕</button></div><div style="font-size:13px;color:var(--ink2);margin-bottom:12px">Digest for: <strong>${tickers.join(', ')}</strong></div><div class="news-config"><strong>AI news digest</strong> — configure an API key to fetch live news summaries.</div><div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Close</button></div></div></div>`;}
+
+/* ══════════════════════════════════════
+   PORTFOLIO TAB
+══════════════════════════════════════ */
+function renderPortfolio(){
+  const p=state.portfolio;
+  const syncedAt=state.portfolioSyncedAt?'Updated '+fmtDateRelative(state.portfolioSyncedAt):'Never synced';
+  const connectBtn=`<button class="weekly-digest-btn" onclick="openSheetsSetup()" style="margin-bottom:12px">${state.sheetsId?'⟳ Sync from Sheets':'↓ Connect Google Sheets'}</button>`;
+  const syncInfo=state.sheetsId?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${syncedAt}</div>`:'';
+  const meta=state.portfolioMeta;
+  const summaryHtml=meta&&meta.totalValue?`<div class="analytics-grid" style="margin-bottom:16px">
+    <div class="metric-card"><div class="metric-label">Total portfolio</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.totalValue).toLocaleString('en-GB')}</div></div>
+    <div class="metric-card"><div class="metric-label">Invested</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.investedValue||0).toLocaleString('en-GB')}</div></div>
+    <div class="metric-card"><div class="metric-label">Cash</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.cashGbp||0).toLocaleString('en-GB')}</div></div>
+    <div class="metric-card"><div class="metric-label">Cash %</div><div class="metric-value" style="font-size:18px">${((meta.cashPct||0)*100).toFixed(1)}%</div></div>
+  </div>`:'';
+
+  if(!p.length){
+    return connectBtn+`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No portfolio data</div><div class="empty-body">${state.sheetsId?'Tap sync above to pull your latest holdings.':'Connect your Google Sheet to see position weights and sector breakdown.'}</div></div>`;
+  }
+
+  // group by custom sector tag
+  const sectors={};const geos={};
+  p.forEach(h=>{
+    const w=parseFloat(h.weight_pct||0);
+    if(h.sector&&w){sectors[h.sector]=(sectors[h.sector]||0)+w;}
+    if(h.geography&&w){geos[h.geography]=(geos[h.geography]||0)+w;}
+  });
+  const sectorRows=Object.entries(sectors).sort((a,b)=>b[1]-a[1]);
+  const geoRows=Object.entries(geos).sort((a,b)=>b[1]-a[1]);
+  const maxSec=sectorRows[0]?.[1]||1;
+  const maxGeo=geoRows[0]?.[1]||1;
+
+  const sectorHtml=sectorRows.map(([s,w])=>`
+    <div class="ticker-row" style="cursor:default">
+      <div class="ticker-name" style="color:var(--hash-txt);min-width:80px">${s}</div>
+      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxSec*100)}%;background:var(--hash-txt)"></div></div>
+      <div class="ticker-count">${(w*100).toFixed(1)}%</div>
+    </div>`).join('');
+
+  const geoHtml=geoRows.map(([g,w])=>`
+    <div class="ticker-row" style="cursor:default">
+      <div class="ticker-name" style="min-width:80px">${g}</div>
+      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxGeo*100)}%"></div></div>
+      <div class="ticker-count">${(w*100).toFixed(1)}%</div>
+    </div>`).join('');
+
+  // holdings table sorted by weight
+  const sorted=[...p].filter(h=>h.weight_pct).sort((a,b)=>parseFloat(b.weight_pct)-parseFloat(a.weight_pct));
+  const maxW=parseFloat(sorted[0]?.weight_pct||1);
+
+  const holdingsHtml=sorted.map(h=>{
+    const wPct=(parseFloat(h.weight_pct||0)*100).toFixed(2);
+    const hasMemo=state.memos.some(m=>m.ticker==='$'+h.symbol||m.ticker===h.symbol);
+    return`<div class="ticker-row" onclick="openTickerMemo('${h.symbol}')">
+      <div style="min-width:52px"><div class="ticker-name">${h.symbol}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${h.name||h.sector||''}</div></div>
+      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(parseFloat(h.weight_pct||0)/maxW*100)}%"></div></div>
+      <div style="text-align:right;min-width:52px">
+        <div class="ticker-count">${wPct}%</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const geoSection=geoRows.length?`<div class="section-label">Geography</div><div class="ticker-list" style="margin-bottom:16px">${geoHtml}</div>`:'';
+  return connectBtn+syncInfo+summaryHtml+
+    `<div class="section-label">Sector</div><div class="ticker-list" style="margin-bottom:16px">${sectorHtml}</div>`+
+    geoSection+
+    `<div class="section-label">Holdings (${sorted.length}) — by weight</div><div class="ticker-list" style="margin-bottom:60px">${holdingsHtml}</div>`;
+}
+
+function openSheetsSetup(){
+  const root=document.getElementById('modalRoot');
+  const needsOAuth = !window.state.oauthRefreshToken;
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Portfolio — Google Sheets</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      ${needsOAuth
+        ? `<div style="font-size:13px;color:var(--warn-txt);background:var(--warn-bg);padding:10px;border-radius:var(--r);margin-bottom:12px">Connect your Google account first (tap the Drive badge at the top).</div>`
+        : ''}
+      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
+        Paste your <strong>Spreadsheet ID</strong> — the string in the Sheets URL between <code style="font-family:var(--font-mono);font-size:11px;background:var(--surface3);padding:1px 4px;border-radius:3px">/d/</code> and <code style="font-family:var(--font-mono);font-size:11px;background:var(--surface3);padding:1px 4px;border-radius:3px">/edit</code>.
+      </div>
+      <div class="field-row">
+        <div class="field-label">Spreadsheet ID</div>
+        <input class="field-input" id="sheetsIdInput" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms" value="${window.state.sheetsId||''}">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" ${needsOAuth?'disabled':''} onclick="connectSheets()">Connect & sync</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function connectSheets(){
+  const id=(document.getElementById('sheetsIdInput')?.value||'').trim();
+  if(!id){showToast('Enter a spreadsheet ID');return;}
+  window.state.sheetsId=id;
+  save();closeModal();
+  syncFromSheets();
+}
+
+async function syncFromSheets(){
+  if(!state.sheetsId||!state.sheetsToken){showToast('Sheets not connected');return;}
+  showToast('Syncing portfolio…');
+  try{
+    const token = await getAccessToken();
+  if(!token){showToast('Not connected to Google — tap the Drive badge');return;}
+  const base=`https://sheets.googleapis.com/v4/spreadsheets/${window.state.sheetsId}/values`;
+  const hdrs={Authorization:`Bearer ${token}`};
+
+    // Read portfolio tab
+    const pRes=await fetch(`${base}/${encodeURIComponent('portfolio!A2:E200')}`,{headers:hdrs});
+    if(!pRes.ok){const e=await pRes.json();throw new Error(e.error?.message||pRes.status);}
+    const pData=await pRes.json();
+    const rows=pData.values||[];
+    state.portfolio=rows
+      .filter(r=>r[0]&&r[0].trim()&&!r[0].trim().toUpperCase().includes('TOTAL'))
+      .map(r=>({
+        symbol:          (r[0]||'').trim(),
+        name:            (r[1]||'').trim(),
+        sector:          (r[2]||'').trim(),
+        geography:       (r[3]||'').trim(),
+        weight_pct:      parseWeight(r[4]||''),
+      }));
+
+    // Read inputs tab: B2=date, B3=total portfolio value, B5=invested, B6=cash, B7=cash%
+    const iRes=await fetch(`${base}/${encodeURIComponent('inputs!B2:B14')}`,{headers:hdrs});
+    if(iRes.ok){
+      const iData=await iRes.json();
+      const vals=(iData.values||[]).map(r=>r[0]||'');
+      // B2=row0, B3=row1, B5=row3, B6=row4, B7=row5
+      state.portfolioMeta={
+        snapshotDate:   vals[0]||'',
+        totalValue:     parseMV(vals[1]||''),
+        investedValue:  parseMV(vals[3]||''),
+        cashGbp:        parseMV(vals[4]||''),
+        cashPct:        parseWeight(vals[5]||''),
+      };
+    }
+
+    state.portfolioSyncedAt=new Date().toISOString();
+    save();render();
+    showToast('Portfolio synced — '+state.portfolio.length+' holdings');
+  }catch(err){
+    showToast('Sheets sync failed: '+err.message);
+  }
+}
+
+function parseWeight(val){
+  // handles "3.25%" or "0.0325" from Sheets
+  const s=String(val).replace(/[£%,\s]/g,'');
+  const n=parseFloat(s);
+  if(isNaN(n))return 0;
+  return n>1?n/100:n; // if >1 assume it came as percentage string
+}
+function parseMV(val){
+  const s=String(val).replace(/[£,\s]/g,'');
+  const n=parseFloat(s);
+  return isNaN(n)?0:n;
+}
+
+/* ══════════════════════════════════════
+   ANALYTICS TAB
+══════════════════════════════════════ */
+function renderAnalytics(){
+  const entries=state.entries;
+  if(!entries.length)return`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No data yet</div><div class="empty-body">Log some entries and analytics will appear here.</div></div>`;
+  const now=new Date();
+  const thisWeek=entries.filter(e=>(now-new Date(e.ts))<7*86400000);
+  const thisMonth=entries.filter(e=>{const d=new Date(e.ts);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
+  const tickers=allTickers();const streak=calcStreak();
+  const last30=[];
+  for(let i=29;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;last30.push(entries.filter(e=>{const dd=new Date(e.ts);return`${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`===key;}).length);}
+  const heatMax=Math.max(...last30,1);
+  const heatCells=last30.map(c=>{const op=c===0?0.08:Math.max(0.2,c/heatMax);return`<div style="width:100%;aspect-ratio:1;background:var(--accent);opacity:${op.toFixed(2)};border-radius:2px" title="${c} entries"></div>`;}).join('');
+  const memoCount=state.memos.length;
+  return`<div class="analytics-grid">
+    <div class="metric-card"><div class="metric-label">Total entries</div><div class="metric-value">${entries.length}</div></div>
+    <div class="metric-card"><div class="metric-label">This week</div><div class="metric-value">${thisWeek.length}</div></div>
+    <div class="metric-card"><div class="metric-label">This month</div><div class="metric-value">${thisMonth.length}</div></div>
+    <div class="metric-card"><div class="metric-label">Day streak</div><div class="metric-value">${streak}</div><div class="metric-sub">consecutive days</div></div>
+    <div class="metric-card"><div class="metric-label">Memos</div><div class="metric-value">${memoCount}</div><div class="metric-sub">investment theses</div></div>
+    <div class="metric-card"><div class="metric-label">Holdings tracked</div><div class="metric-value">${tickers.length}</div></div>
+  </div>
+  <div class="section-label">Activity — last 30 days</div>
+  <div style="display:grid;grid-template-columns:repeat(30,1fr);gap:2px;margin-bottom:20px">${heatCells}</div>
+  ${tickers.length?`<div class="section-label">Top tickers</div><div class="ticker-list" style="margin-bottom:16px">${tickers.slice(0,5).map(([t,c])=>`<div class="ticker-row" onclick="openTickerMemo('${t}')"><div class="ticker-name">${t}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/(tickers[0][1])*100)}%"></div></div><div class="ticker-count">${c}</div></div>`).join('')}</div>`:''}`;
+}
+function calcStreak(){
+  if(!state.entries.length)return 0;
+  const days=new Set(state.entries.map(e=>{const d=new Date(e.ts);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}));
+  let streak=0,d=new Date();
+  while(true){const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;if(!days.has(k))break;streak++;d.setDate(d.getDate()-1);}
+  return streak;
+}
+
+/* ══════════════════════════════════════
+   COMPOSE
+══════════════════════════════════════ */
+function openCompose(){
+  const card=document.getElementById('composeCard');
+  if(!card){setTab('log');setTimeout(openCompose,50);return;}
+  card.style.display='block';document.getElementById('composeText').focus();
+  document.getElementById('fab').style.display='none';
+}
+function closeCompose(){
+  const card=document.getElementById('composeCard');
+  if(card)card.style.display='none';
+  document.getElementById('fab').style.display='flex';
+}
+function onComposeInput(){
+  const text=document.getElementById('composeText').value;
+  const tickers=extractTickers(text);const hashes=extractHashes(text);
+  document.getElementById('composeTags').innerHTML=tickers.map(t=>`<span class="tag ticker">${t}</span>`).join('')+hashes.map(h=>`<span class="tag hash">${h}</span>`).join('');
+  document.getElementById('submitBtn').disabled=!text.trim();
+}
+function submitEntry(){
+  const text=document.getElementById('composeText').value.trim();if(!text)return;
+  const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),text,tickers:extractTickers(text),hashes:extractHashes(text),ts:new Date().toISOString(),showNews:false,newsItems:null,newsTs:null};
+  state.entries.unshift(entry);save();
+  document.getElementById('composeText').value='';document.getElementById('composeTags').innerHTML='';document.getElementById('submitBtn').disabled=true;
+  closeCompose();render();showToast('Entry saved');
+  if(state.driveSynced)scheduleDriveSync();
+}
+function deleteEntry(id){
+  if(!confirm('Delete this entry?'))return;
+  state.entries=state.entries.filter(e=>e.id!==id);save();render();showToast('Entry deleted');
+  if(state.driveSynced)scheduleDriveSync();
+}
+function editEntry(id){
+  const entry=state.entries.find(e=>e.id===id);if(!entry)return;
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Edit entry</div><button class="icon-btn" onclick="closeModal()">✕</button></div><textarea id="editText" oninput="onEditInput('${id}')">${entry.text.replace(/</g,'&lt;')}</textarea><div class="preview-tags" id="editTags" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px"></div><div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveEdit('${id}')">Save</button></div></div></div>`;
+  setTimeout(()=>onEditInput(id),0);
+}
+function onEditInput(id){const text=document.getElementById('editText')?.value||'';const tEl=document.getElementById('editTags');if(!tEl)return;tEl.innerHTML=extractTickers(text).map(t=>`<span class="tag ticker">${t}</span>`).join('')+extractHashes(text).map(h=>`<span class="tag hash">${h}</span>`).join('');}
+function saveEdit(id){
+  const text=document.getElementById('editText')?.value?.trim();if(!text)return;
+  const entry=state.entries.find(e=>e.id===id);
+  if(entry){entry.text=text;entry.tickers=extractTickers(text);entry.hashes=extractHashes(text);}
+  save();closeModal();render();showToast('Entry updated');
+  if(state.driveSynced)scheduleDriveSync();
+}
+function toggleNews(id){const entry=state.entries.find(e=>e.id===id);if(entry)entry.showNews=!entry.showNews;render();}
+function closeModal(){document.getElementById('modalRoot').innerHTML='';}
+
+/* ══════════════════════════════════════
+   DRIVE SYNC
+══════════════════════════════════════ */
+/* ══════════════════════════════════════
+   OAUTH + DRIVE SYNC
+══════════════════════════════════════ */
+const OAUTH_REDIRECT = location.origin + location.pathname;
+const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets.readonly';
+
+// Called on page load — complete the OAuth code exchange if we were redirected back
+(async function handleOAuthRedirect(){
+  const params = new URLSearchParams(location.search);
+  const code   = params.get('code');
+  const state  = params.get('state');
+  if(!code || state !== 'invest_diary_oauth') return;
+  // Clean URL without reloading
+  history.replaceState({}, '', location.pathname);
+  const stored = JSON.parse(sessionStorage.getItem('oauth_pending')||'{}');
+  if(!stored.clientId || !stored.clientSecret){showToast('OAuth error: credentials missing');return;}
+  try{
+    const res = await fetch('https://oauth2.googleapis.com/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({
+        code, client_id: stored.clientId, client_secret: stored.clientSecret,
+        redirect_uri: OAUTH_REDIRECT, grant_type: 'authorization_code'
+      })
+    });
+    const data = await res.json();
+    if(data.error) throw new Error(data.error_description||data.error);
+    window.state.oauthClientId     = stored.clientId;
+    window.state.oauthClientSecret = stored.clientSecret;
+    window.state.oauthRefreshToken = data.refresh_token;
+    window.state.oauthAccessToken  = data.access_token;
+    window.state.oauthExpiry       = Date.now() + (data.expires_in - 60) * 1000;
+    window.state.driveSynced       = true;
+    // share with Sheets
+    window.state.sheetsToken = data.access_token;
+    sessionStorage.removeItem('oauth_pending');
+    save();
+    updateSyncBadge('ok');
+    showToast('Connected — syncing…');
+    pushToDrive();
+  }catch(e){showToast('OAuth failed: '+e.message);}
+})();
+
+async function getAccessToken(){
+  // Return cached token if still valid
+  if(window.state.oauthAccessToken && Date.now() < window.state.oauthExpiry){
+    return window.state.oauthAccessToken;
+  }
+  // Use refresh token to get a new access token silently
+  if(!window.state.oauthRefreshToken || !window.state.oauthClientId || !window.state.oauthClientSecret){
+    return null;
+  }
+  try{
+    const res = await fetch('https://oauth2.googleapis.com/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({
+        refresh_token: window.state.oauthRefreshToken,
+        client_id:     window.state.oauthClientId,
+        client_secret: window.state.oauthClientSecret,
+        grant_type:    'refresh_token'
+      })
+    });
+    const data = await res.json();
+    if(data.error) throw new Error(data.error_description||data.error);
+    window.state.oauthAccessToken = data.access_token;
+    window.state.oauthExpiry      = Date.now() + (data.expires_in - 60) * 1000;
+    window.state.sheetsToken      = data.access_token;
+    save();
+    return data.access_token;
+  }catch(e){
+    updateSyncBadge('error');
+    return null;
+  }
+}
+
+let syncTimer;
+function scheduleDriveSync(){clearTimeout(syncTimer);syncTimer=setTimeout(pushToDrive,2000);}
+function syncNow(){
+  openOAuthSetup();
+}
+
+function openOAuthSetup(){
+  const root=document.getElementById('modalRoot');
+  const isConnected = !!window.state.oauthRefreshToken;
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">${isConnected?'Google account connected':'Connect Google account'}</div>
+        <button class="icon-btn" onclick="closeModal()">✕</button>
+      </div>
+      ${isConnected
+        ? `<div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
+            Your diary syncs automatically to Drive.<br>
+            <span style="font-family:var(--font-mono);font-size:11px;color:var(--ink3)">drive.file scope only — no other Drive access.</span>
+           </div>
+           <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
+             <button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="disconnectOAuth()">Disconnect</button>
+             <button class="btn btn-ghost" onclick="reAuthenticate()">Re-authenticate</button>
+             <button class="btn btn-primary" onclick="closeModal();pushToDrive()">Sync now</button>
+           </div>`
+        : `<div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
+            You'll need a <strong>Google Cloud OAuth 2.0 Client ID</strong>.<br>
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent)">Open Google Cloud Console →</a>
+           </div>
+           <div class="field-row">
+             <div class="field-label">Client ID</div>
+             <input class="field-input" id="oauthClientId" placeholder="xxxx.apps.googleusercontent.com" value="${window.state.oauthClientId||''}">
+           </div>
+           <div class="field-row">
+             <div class="field-label">Client Secret</div>
+             <input class="field-input" id="oauthClientSecret" placeholder="GOCSPX-…" type="password" value="${window.state.oauthClientSecret||''}">
+           </div>
+           <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;line-height:1.6">
+             Authorised redirect URI to add in Cloud Console:<br>
+             <span style="color:var(--ink)">${OAUTH_REDIRECT}</span>
+           </div>
+           <div class="modal-footer">
+             <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+             <button class="btn btn-primary" onclick="startOAuthFlow()">Authorise with Google</button>
+           </div>`
+      }
+    </div>
+  </div>`;
+}
+
+function startOAuthFlow(){
+  const clientId     = document.getElementById('oauthClientId')?.value?.trim();
+  const clientSecret = document.getElementById('oauthClientSecret')?.value?.trim();
+  if(!clientId||!clientSecret){showToast('Enter Client ID and Secret');return;}
+  // Store credentials temporarily so the redirect handler can use them
+  sessionStorage.setItem('oauth_pending', JSON.stringify({clientId, clientSecret}));
+  const params = new URLSearchParams({
+    client_id:     clientId,
+    redirect_uri:  OAUTH_REDIRECT,
+    response_type: 'code',
+    scope:         OAUTH_SCOPES,
+    access_type:   'offline',
+    prompt:        'consent',   // force refresh_token even if previously granted
+    state:         'invest_diary_oauth'
+  });
+  location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+}
+
+function disconnectOAuth(){
+  if(!confirm('Disconnect Google account? Diary entries stay local.'))return;
+  window.state.oauthClientId=null;window.state.oauthClientSecret=null;
+  window.state.oauthRefreshToken=null;window.state.oauthAccessToken=null;
+  window.state.oauthExpiry=0;window.state.driveSynced=false;
+  save();closeModal();updateSyncBadge('disconnected');showToast('Disconnected');
+}
+function reAuthenticate(){
+  window.state.oauthRefreshToken=null;window.state.oauthAccessToken=null;
+  window.state.oauthExpiry=0;window.state.driveSynced=false;
+  save();closeModal();
+  setTimeout(openOAuthSetup,100);
+}
+
+function updateSyncBadge(status){
+  const badge=document.getElementById('syncBadge');
+  const dot=document.getElementById('syncDot');
+  const label=document.getElementById('syncLabel');
+  badge.className='sync-badge';dot.className='dot';
+  if(status==='syncing'){badge.classList.add('syncing');dot.classList.add('pulse');label.textContent='Syncing…';}
+  else if(status==='ok'){badge.classList.add('syncing');label.textContent='Drive ✓';}
+  else if(status==='error'){badge.classList.add('error');label.textContent='Sync error';}
+  else{label.textContent='Connect Drive';}
+}
+
+async function pushToDrive(){
+  const token = await getAccessToken();
+  if(!token){
+    if(window.state.oauthRefreshToken) updateSyncBadge('error');
+    return;
+  }
+  updateSyncBadge('syncing');
+  const data=JSON.stringify({entries:window.state.entries,memos:window.state.memos,lastSync:new Date().toISOString()},null,2);
+  try{
+    let fileId=window.state.driveFileId;
+    if(!fileId){
+      const searchRes=await fetch(`https://www.googleapis.com/drive/v3/files?q=name%3D'investment-diary.json'+and+trashed%3Dfalse&fields=files(id,name)`,{headers:{Authorization:`Bearer ${token}`}});
+      const searchData=await searchRes.json();
+      if(searchData.files?.length)fileId=searchData.files[0].id;
+    }
+    if(fileId){
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:data});
+    }else{
+      const meta={name:'investment-diary.json',mimeType:'application/json'};
+      const createRes=await fetch('https://www.googleapis.com/drive/v3/files',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(meta)});
+      const created=await createRes.json();
+      fileId=created.id;
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:data});
+    }
+    window.state.driveFileId=fileId;save();updateSyncBadge('ok');
+  }catch(err){updateSyncBadge('error');showToast('Drive sync failed');}
+}
+
+function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
+render();
+// Set initial sync badge state based on persisted OAuth
+if(window.state.oauthRefreshToken){updateSyncBadge('ok');}
+else if(window.state.driveSynced){
+  window.state.driveSynced=false;window.state.driveToken=null;
+  save();
+}
+</script>
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('sw.js')
+      .catch(e=>console.warn('SW registration failed:',e));
+  });
+}
+</script>
+</body>
+</html>
