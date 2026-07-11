@@ -258,6 +258,7 @@ let state={
   entries:[],memos:[],
   driveFileId:null,driveSynced:false,driveToken:null,
   sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
+  tickerTags:{},portSelectMode:false,portSelected:{},
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),selectedDay:null,
@@ -273,6 +274,7 @@ function load(){
       state.driveFileId=s.driveFileId||null;
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
+      state.tickerTags=s.tickerTags||{};
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -285,6 +287,7 @@ function save(){
     entries:state.entries,memos:state.memos,driveFileId:state.driveFileId,
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
+    tickerTags:state.tickerTags,
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -776,8 +779,17 @@ function openNewsDigestModal(tickers){const root=document.getElementById('modalR
 function renderPortfolio(){
   const p=state.portfolio;
   const syncedAt=state.portfolioSyncedAt?'Updated '+fmtDateRelative(state.portfolioSyncedAt):'Never synced';
-  const connectBtn=`<button class="weekly-digest-btn" onclick="openPortfolioPaste()" style="margin-bottom:12px">↓ Paste portfolio update</button>`;
+  const connectBtn=`<button class="weekly-digest-btn" onclick="openPortfolioPaste()" style="margin-bottom:12px">↓ Paste broker CSV update</button>`;
   const syncInfo=state.portfolioSyncedAt?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${syncedAt}</div>`:'';
+
+  if(!p.length){
+    return connectBtn+`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No portfolio data</div><div class="empty-body">Paste your broker CSV export — exactly as downloaded, no editing needed.</div></div>`;
+  }
+
+  // merge in tags
+  const rows=p.map(h=>{const t=state.tickerTags[h.symbol]||{};return{...h,sector:t.sector||'',geography:t.geography||'',gfTicker:t.gfTicker||''};});
+
+  // summary cards
   const meta=state.portfolioMeta;
   const summaryHtml=meta&&meta.totalValue?`<div class="analytics-grid" style="margin-bottom:16px">
     <div class="metric-card"><div class="metric-label">Total portfolio</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.totalValue).toLocaleString('en-GB')}</div></div>
@@ -786,26 +798,22 @@ function renderPortfolio(){
     <div class="metric-card"><div class="metric-label">Cash %</div><div class="metric-value" style="font-size:18px">${((meta.cashPct||0)*100).toFixed(1)}%</div></div>
   </div>`:'';
 
-  if(!p.length){
-    return connectBtn+`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No portfolio data</div><div class="empty-body">${state.sheetsId?'Tap sync above to pull your latest holdings.':'Connect your Google Sheet to see position weights and sector breakdown.'}</div></div>`;
-  }
-
-  // group by custom sector tag
-  const sectors={};const geos={};
-  p.forEach(h=>{
-    const w=parseFloat(h.weight_pct||0);
-    if(h.sector&&w){sectors[h.sector]=(sectors[h.sector]||0)+w;}
-    if(h.geography&&w){geos[h.geography]=(geos[h.geography]||0)+w;}
+  // sector & geography aggregation from tags
+  const sectors={};const geos={};let untaggedW=0;
+  rows.forEach(h=>{
+    const w=parseFloat(h.weight_pct||0);if(!w)return;
+    if(h.sector)sectors[h.sector]=(sectors[h.sector]||0)+w;else untaggedW+=w;
+    if(h.geography)geos[h.geography]=(geos[h.geography]||0)+w;
   });
+  if(untaggedW>0)sectors['Untagged']=untaggedW;
   const sectorRows=Object.entries(sectors).sort((a,b)=>b[1]-a[1]);
   const geoRows=Object.entries(geos).sort((a,b)=>b[1]-a[1]);
-  const maxSec=sectorRows[0]?.[1]||1;
-  const maxGeo=geoRows[0]?.[1]||1;
+  const maxSec=sectorRows[0]?.[1]||1;const maxGeo=geoRows[0]?.[1]||1;
 
   const sectorHtml=sectorRows.map(([s,w])=>`
     <div class="ticker-row" style="cursor:default">
-      <div class="ticker-name" style="color:var(--hash-txt);min-width:80px">${s}</div>
-      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxSec*100)}%;background:var(--hash-txt)"></div></div>
+      <div class="ticker-name" style="color:${s==='Untagged'?'var(--ink3)':'var(--hash-txt)'};min-width:80px">${s}</div>
+      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxSec*100)}%;background:${s==='Untagged'?'var(--ink3)':'var(--hash-txt)'}"></div></div>
       <div class="ticker-count">${(w*100).toFixed(1)}%</div>
     </div>`).join('');
 
@@ -815,46 +823,136 @@ function renderPortfolio(){
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxGeo*100)}%"></div></div>
       <div class="ticker-count">${(w*100).toFixed(1)}%</div>
     </div>`).join('');
+  const geoSection=geoRows.length?`<div class="section-label">Geography</div><div class="ticker-list" style="margin-bottom:16px">${geoHtml}</div>`:'';
 
-  // holdings table sorted by weight
-  const sorted=[...p].filter(h=>h.weight_pct).sort((a,b)=>parseFloat(b.weight_pct)-parseFloat(a.weight_pct));
+  // selection mode toolbar
+  const selMode=state.portSelectMode;
+  const selCount=Object.keys(state.portSelected).length;
+  const untaggedCount=rows.filter(h=>!h.sector&&!h.geography).length;
+  const tagToolbar=selMode
+    ?`<div style="display:flex;gap:6px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:12px;font-family:var(--font-mono);color:var(--accent)">${selCount} selected</span>
+        <button class="btn btn-ghost btn-sm" onclick="selectUntaggedHoldings()">Select untagged (${untaggedCount})</button>
+        <button class="btn btn-primary btn-sm" ${selCount?'':'disabled'} onclick="openTagModal()">Tag selected</button>
+        <button class="btn btn-ghost btn-sm" onclick="exitSelectMode()">Done</button>
+      </div>`
+    :`<div style="display:flex;gap:6px;margin-bottom:12px">
+        <button class="btn btn-ghost btn-sm" onclick="enterSelectMode()">⊞ Tag holdings${untaggedCount?` (${untaggedCount} untagged)`:''}</button>
+      </div>`;
+
+  // holdings list sorted by weight
+  const sorted=[...rows].sort((a,b)=>parseFloat(b.weight_pct||0)-parseFloat(a.weight_pct||0));
   const maxW=parseFloat(sorted[0]?.weight_pct||1);
 
   const holdingsHtml=sorted.map(h=>{
     const wPct=(parseFloat(h.weight_pct||0)*100).toFixed(2);
-    const hasMemo=state.memos.some(m=>m.ticker==='$'+h.symbol||m.ticker===h.symbol);
-    return`<div class="ticker-row" onclick="openTickerMemo('${h.symbol}')">
-      <div style="min-width:52px"><div class="ticker-name">${h.symbol}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${h.name||h.sector||''}</div></div>
+    const isSel=!!state.portSelected[h.symbol];
+    const tagLine=h.sector||h.geography
+      ?`${h.sector}${h.sector&&h.geography?' · ':''}${h.geography}`
+      :'<span style="color:var(--warn-txt)">untagged</span>';
+    const clickAction=selMode?`togglePortSelect('${h.symbol}')`:`openTickerMemo('${h.symbol}')`;
+    return`<div class="ticker-row" onclick="${clickAction}" style="${isSel?'border-color:var(--accent);background:var(--accent2);':''}">
+      ${selMode?`<div style="width:20px;height:20px;border-radius:5px;border:2px solid ${isSel?'var(--accent)':'var(--border2)'};background:${isSel?'var(--accent)':'transparent'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;margin-right:8px;flex-shrink:0">${isSel?'✓':''}</div>`:''}
+      <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${h.symbol}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div></div>
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(parseFloat(h.weight_pct||0)/maxW*100)}%"></div></div>
-      <div style="text-align:right;min-width:52px">
-        <div class="ticker-count">${wPct}%</div>
-      </div>
+      <div style="text-align:right;min-width:52px"><div class="ticker-count">${wPct}%</div></div>
     </div>`;
   }).join('');
 
-  const geoSection=geoRows.length?`<div class="section-label">Geography</div><div class="ticker-list" style="margin-bottom:16px">${geoHtml}</div>`:'';
   return connectBtn+syncInfo+summaryHtml+
     `<div class="section-label">Sector</div><div class="ticker-list" style="margin-bottom:16px">${sectorHtml}</div>`+
     geoSection+
-    `<div class="section-label">Holdings (${sorted.length}) — by weight</div><div class="ticker-list" style="margin-bottom:60px">${holdingsHtml}</div>`;
+    `<div class="section-label">Holdings (${sorted.length}) — by weight</div>`+
+    tagToolbar+
+    `<div class="ticker-list" style="margin-bottom:60px">${holdingsHtml}</div>`;
 }
 
+/* ── selection & tagging ── */
+function enterSelectMode(){state.portSelectMode=true;state.portSelected={};render();}
+function exitSelectMode(){state.portSelectMode=false;state.portSelected={};render();}
+function togglePortSelect(sym){
+  if(state.portSelected[sym])delete state.portSelected[sym];
+  else state.portSelected[sym]=true;
+  render();
+}
+function selectUntaggedHoldings(){
+  state.portfolio.forEach(h=>{
+    const t=state.tickerTags[h.symbol]||{};
+    if(!t.sector&&!t.geography)state.portSelected[h.symbol]=true;
+  });
+  render();
+}
+function allExistingTagValues(field){
+  const vals=new Set();
+  Object.values(state.tickerTags).forEach(t=>{if(t[field])vals.add(t[field]);});
+  return[...vals].sort();
+}
+function openTagModal(){
+  const syms=Object.keys(state.portSelected);
+  if(!syms.length){showToast('Select holdings first');return;}
+  const single=syms.length===1;
+  const cur=single?(state.tickerTags[syms[0]]||{}):{};
+  const secOpts=allExistingTagValues('sector').map(v=>`<option value="${v}">`).join('');
+  const geoOpts=allExistingTagValues('geography').map(v=>`<option value="${v}">`).join('');
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Tag ${single?syms[0]:syms.length+' holdings'}</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="font-size:12px;color:var(--ink3);margin-bottom:12px">Leave a field blank to keep existing values unchanged.</div>
+      <div class="field-row">
+        <div class="field-label">Sector</div>
+        <input class="field-input" id="tagSectorInput" list="sectorList" placeholder="e.g. Gold Explorer" value="${single?(cur.sector||''):''}">
+        <datalist id="sectorList">${secOpts}</datalist>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Geography</div>
+        <input class="field-input" id="tagGeoInput" list="geoList" placeholder="e.g. Canada" value="${single?(cur.geography||''):''}">
+        <datalist id="geoList">${geoOpts}</datalist>
+      </div>
+      ${single?`<div class="field-row">
+        <div class="field-label">Google Finance ticker override <span style="opacity:.5">(optional — e.g. OTC listing)</span></div>
+        <input class="field-input" id="tagGfInput" placeholder="e.g. OTCMKTS:AUMBF" value="${cur.gfTicker||''}" style="font-family:var(--font-mono)">
+      </div>`:''}
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="applyTags()">Apply</button>
+      </div>
+    </div>
+  </div>`;
+  setTimeout(()=>document.getElementById('tagSectorInput')?.focus(),100);
+}
+function applyTags(){
+  const syms=Object.keys(state.portSelected);
+  const sector=(document.getElementById('tagSectorInput')?.value||'').trim();
+  const geo=(document.getElementById('tagGeoInput')?.value||'').trim();
+  const gf=(document.getElementById('tagGfInput')?.value||'').trim();
+  syms.forEach(s=>{
+    const t=state.tickerTags[s]||{};
+    if(sector)t.sector=sector;
+    if(geo)t.geography=geo;
+    if(gf&&syms.length===1)t.gfTicker=gf;
+    state.tickerTags[s]=t;
+  });
+  save();closeModal();
+  state.portSelected={};
+  render();
+  showToast('Tagged '+syms.length+' holding'+(syms.length===1?'':'s'));
+  if(state.driveSynced)scheduleDriveSync();
+}
+
+/* ── broker CSV import ── */
 function openPortfolioPaste(){
   const root=document.getElementById('modalRoot');
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal">
       <div class="modal-header"><div class="modal-title">Update portfolio</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
       <div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:12px">
-        In your Google Sheet → <strong>portfolio</strong> tab → File → Download → CSV.<br>Open the CSV in a text editor, select all, paste below.
+        Paste your broker CSV export below — <strong>exactly as downloaded</strong>, header and totals included. Your sector/geography tags are kept between updates.
       </div>
-      <textarea id="portfolioCsvInput" style="width:100%;min-height:120px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:12px;font-family:var(--font-mono);color:var(--ink);background:var(--surface2);outline:none;resize:vertical" placeholder="symbol,name,sector,geography,weight_pct"></textarea>
+      <textarea id="portfolioCsvInput" style="width:100%;min-height:120px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:12px;font-family:var(--font-mono);color:var(--ink);background:var(--surface2);outline:none;resize:vertical" placeholder="Symbol,Name,Qty,Price,..."></textarea>
       <div class="field-row" style="margin-top:10px">
-        <div class="field-label">Total portfolio value £ <span style="opacity:.5">(optional)</span></div>
+        <div class="field-label">Total portfolio value £ <span style="opacity:.5">(optional — for cash %)</span></div>
         <input class="field-input" id="portfolioTotalInput" type="number" placeholder="347987" value="${state.portfolioMeta&&state.portfolioMeta.totalValue?state.portfolioMeta.totalValue:''}">
-      </div>
-      <div class="field-row">
-        <div class="field-label">Cash £ <span style="opacity:.5">(optional)</span></div>
-        <input class="field-input" id="portfolioCashInput" type="number" placeholder="9400" value="${state.portfolioMeta&&state.portfolioMeta.cashGbp?state.portfolioMeta.cashGbp:''}">
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -864,40 +962,70 @@ function openPortfolioPaste(){
   </div>`;
 }
 
+function parseCsvLine(line){
+  const parts=[];let cur='';let inQ=false;
+  for(const ch of line){
+    if(ch==='"'){inQ=!inQ;}
+    else if(ch===','&&!inQ){parts.push(cur.trim());cur='';}
+    else{cur+=ch;}
+  }
+  parts.push(cur.trim());
+  return parts;
+}
+
 function importPortfolioCsv(){
-  const csv=(document.getElementById('portfolioCsvInput')?.value||'').trim();
-  if(!csv){showToast('Paste your portfolio CSV first');return;}
+  let csv=(document.getElementById('portfolioCsvInput')?.value||'');
+  // strip BOM / zero-width chars that the broker export scatters around
+  csv=csv.replace(/[\uFEFF\u200B\u200C\u200D]/g,'').trim();
+  if(!csv){showToast('Paste your broker CSV first');return;}
   const totalVal=parseFloat(document.getElementById('portfolioTotalInput')?.value||'0')||0;
-  const cashVal=parseFloat(document.getElementById('portfolioCashInput')?.value||'0')||0;
-  const lines=csv.split('\n').map(l=>l.trim()).filter(Boolean);
-  const dataLines=lines[0].toLowerCase().includes('symbol')?lines.slice(1):lines;
-  const rows=dataLines.map(l=>{
-    const parts=[];let cur='';let inQ=false;
-    for(const ch of l){if(ch==='"'){inQ=!inQ;}else if(ch===','&&!inQ){parts.push(cur.trim());cur='';}else{cur+=ch;}}
-    parts.push(cur.trim());
-    return parts;
-  });
-  const portfolio=rows
-    .filter(r=>r[0]&&r[0].trim()&&!r[0].toUpperCase().includes('TOTAL'))
-    .map(r=>({
-      symbol:    (r[0]||'').trim().toUpperCase(),
-      name:      (r[1]||'').trim(),
-      sector:    (r[2]||'').trim(),
-      geography: (r[3]||'').trim(),
-      weight_pct:parseWeight(r[4]||''),
-    }));
-  if(!portfolio.length){showToast('No valid rows found — check format');return;}
-  state.portfolio=portfolio;
+
+  const lines=csv.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const rows=lines.map(parseCsvLine);
+
+  // locate header row (Symbol,Name,...) and the Market Value £ column
+  let headerIdx=rows.findIndex(r=>(r[0]||'').toLowerCase()==='symbol');
+  let mvCol=6; // default position of "Market Value £" in the broker export
+  if(headerIdx>=0){
+    const hdr=rows[headerIdx].map(c=>c.toLowerCase());
+    const found=hdr.findIndex(c=>c.includes('market value £')||c.includes('market value gbp'));
+    if(found>=0)mvCol=found;
+  }
+  const dataRows=headerIdx>=0?rows.slice(headerIdx+1):rows;
+
+  const holdings=[];
+  for(const r of dataRows){
+    const sym=(r[0]||'').replace(/"/g,'').trim();
+    if(!sym)continue;                       // totals rows have empty symbol
+    if(sym.toLowerCase()==='totals')continue;
+    const name=(r[1]||'').trim();
+    const mv=parseMV(r[mvCol]||'');
+    if(!mv)continue;                        // skip zero-value residual rows
+    holdings.push({symbol:sym.toUpperCase(),name,mv});
+  }
+  if(!holdings.length){showToast('No holdings found — check the paste');return;}
+
+  const investedTotal=holdings.reduce((s,h)=>s+h.mv,0);
+  const denom=totalVal>0?totalVal:investedTotal;
+
+  state.portfolio=holdings.map(h=>({
+    symbol:h.symbol,
+    name:h.name,
+    weight_pct:denom>0?h.mv/denom:0,
+  }));
+  const cashVal=totalVal>0?Math.max(0,totalVal-investedTotal):0;
   state.portfolioMeta={
     totalValue:    totalVal,
+    investedValue: investedTotal,
     cashGbp:       cashVal,
     cashPct:       totalVal>0?cashVal/totalVal:0,
-    investedValue: totalVal>0?totalVal-cashVal:0,
     snapshotDate:  new Date().toLocaleDateString('en-GB'),
   };
   state.portfolioSyncedAt=new Date().toISOString();
   save();closeModal();render();
-  showToast('Portfolio updated — '+portfolio.length+' holdings');
+  const newUntagged=state.portfolio.filter(h=>{const t=state.tickerTags[h.symbol]||{};return!t.sector&&!t.geography;}).length;
+  showToast('Imported '+holdings.length+' holdings'+(newUntagged?' — '+newUntagged+' untagged':''));
+  if(state.driveSynced)scheduleDriveSync();
 }
 
 function parseWeight(val){
@@ -1177,7 +1305,7 @@ async function pushToDrive(){
     return;
   }
   updateSyncBadge('syncing');
-  const data=JSON.stringify({entries:state.entries,memos:state.memos,lastSync:new Date().toISOString()},null,2);
+  const data=JSON.stringify({entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,lastSync:new Date().toISOString()},null,2);
   try{
     let fileId=state.driveFileId;
     if(!fileId){
