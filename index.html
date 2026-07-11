@@ -359,6 +359,7 @@ function renderFilterChips(){
 }
 function render(){
   renderFilterChips();
+  refreshSyncBadge();
   const el=document.getElementById('mainContent');
   if(state.activeTab==='log')el.innerHTML=renderLog();
   else if(state.activeTab==='memos')renderMemosTab(el);
@@ -845,7 +846,7 @@ function renderPortfolio(){
   const maxW=parseFloat(sorted[0]?.weight_pct||1);
 
   const holdingsHtml=sorted.map(h=>{
-    const wPct=(parseFloat(h.weight_pct||0)*100).toFixed(2);
+    const wPct=(parseFloat(h.weight_pct||0)*100).toFixed(1);
     const isSel=!!state.portSelected[h.symbol];
     const tagLine=h.sector||h.geography
       ?`${h.sector}${h.sector&&h.geography?' · ':''}${h.geography}`
@@ -962,11 +963,23 @@ function openPortfolioPaste(){
   </div>`;
 }
 
-function parseCsvLine(line){
+function detectDelimiter(text){
+  // Look at the first few lines; whichever delimiter appears more consistently wins
+  const sample=text.split(/\r?\n/).slice(0,5);
+  let commas=0,tabs=0;
+  sample.forEach(l=>{
+    commas+=(l.match(/,/g)||[]).length;
+    tabs+=(l.match(/\t/g)||[]).length;
+  });
+  return tabs>commas?'\t':',';
+}
+
+function parseCsvLine(line,delim){
+  const d=delim||',';
   const parts=[];let cur='';let inQ=false;
   for(const ch of line){
     if(ch==='"'){inQ=!inQ;}
-    else if(ch===','&&!inQ){parts.push(cur.trim());cur='';}
+    else if(ch===d&&!inQ){parts.push(cur.trim());cur='';}
     else{cur+=ch;}
   }
   parts.push(cur.trim());
@@ -980,8 +993,9 @@ function importPortfolioCsv(){
   if(!csv){showToast('Paste your broker CSV first');return;}
   const totalVal=parseFloat(document.getElementById('portfolioTotalInput')?.value||'0')||0;
 
+  const delim=detectDelimiter(csv);
   const lines=csv.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  const rows=lines.map(parseCsvLine);
+  const rows=lines.map(l=>parseCsvLine(l,delim));
 
   // locate header row (Symbol,Name,...) and the Market Value £ column
   let headerIdx=rows.findIndex(r=>(r[0]||'').toLowerCase()==='symbol');
@@ -993,17 +1007,31 @@ function importPortfolioCsv(){
   }
   const dataRows=headerIdx>=0?rows.slice(headerIdx+1):rows;
 
+  // Currency codes appear in the broker's totals block, never as holdings
+  const CURRENCY_CODES=new Set(['GBP','USD','CAD','AUD','EUR','CHF','JPY','NZD','HKD','SEK','NOK','DKK','SGD','ZAR','TOTALS','TOTAL']);
   const holdings=[];
+  const seen=new Set();
   for(const r of dataRows){
-    const sym=(r[0]||'').replace(/"/g,'').trim();
-    if(!sym)continue;                       // totals rows have empty symbol
-    if(sym.toLowerCase()==='totals')continue;
+    const sym=(r[0]||'').replace(/"/g,'').trim().toUpperCase();
+    if(!sym)continue;                             // totals rows have an empty symbol
+    if(CURRENCY_CODES.has(sym))continue;          // skip the totals-by-currency block
+    if(!/^[A-Z0-9.]{1,10}$/.test(sym))continue;   // reject phantom rows from stray delimiters
+    if(seen.has(sym))continue;                    // guard against duplicate rows
     const name=(r[1]||'').trim();
     const mv=parseMV(r[mvCol]||'');
-    if(!mv)continue;                        // skip zero-value residual rows
-    holdings.push({symbol:sym.toUpperCase(),name,mv});
+    if(!(mv>0))continue;                          // holdings have a positive market value
+    seen.add(sym);
+    holdings.push({symbol:sym,name,mv});
   }
   if(!holdings.length){showToast('No holdings found — check the paste');return;}
+
+  // Sanity check: symbols should be short alphanumeric codes.
+  // If most "symbols" look like numbers or long strings, the delimiter was wrong.
+  const looksValid=holdings.filter(h=>/^[A-Z0-9.]{1,10}$/.test(h.symbol)).length;
+  if(looksValid < holdings.length*0.7){
+    showToast('Parse failed — open the CSV in Notepad and copy from there, not Excel');
+    return;
+  }
 
   const investedTotal=holdings.reduce((s,h)=>s+h.mv,0);
   const denom=totalVal>0?totalVal:investedTotal;
@@ -1287,6 +1315,14 @@ function reAuthenticate(){
   setTimeout(openOAuthSetup,100);
 }
 
+function refreshSyncBadge(){
+  // Keep the badge in step with the real connection state on every render
+  if(!state.oauthRefreshToken){updateSyncBadge('disconnected');return;}
+  const badge=document.getElementById('syncBadge');
+  if(badge&&badge.classList.contains('error'))return;   // leave an error visible
+  if(badge&&badge.classList.contains('syncing')&&document.getElementById('syncLabel')?.textContent==='Syncing…')return;
+  updateSyncBadge('ok');
+}
 function updateSyncBadge(status){
   const badge=document.getElementById('syncBadge');
   const dot=document.getElementById('syncDot');
@@ -1329,12 +1365,16 @@ async function pushToDrive(){
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
 render();
 // Set initial sync badge state based on persisted OAuth
-(function initBadge(){
+(async function initBadge(){
   if(!state)return;
-  if(state.oauthRefreshToken){updateSyncBadge('ok');}
-  else if(state.driveSynced){
+  if(state.oauthRefreshToken){
+    updateSyncBadge('ok');
+    // Warm up the access token so the first real sync doesn't fail
+    const t=await getAccessToken();
+    updateSyncBadge(t?'ok':'error');
+  }else if(state.driveSynced){
     state.driveSynced=false;state.driveToken=null;
-    save();
+    save();updateSyncBadge('disconnected');
   }
 })();
 if('serviceWorker' in navigator){
