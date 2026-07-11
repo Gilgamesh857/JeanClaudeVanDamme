@@ -130,8 +130,9 @@
   .ticker-row:hover{border-color:var(--accent3);background:var(--accent2)}
   .ticker-name{font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)}
   .ticker-count{font-size:12px;color:var(--ink3);font-family:var(--font-mono)}
-  .bar-bg{flex:1;height:4px;background:var(--surface3);border-radius:2px;margin:0 12px}
+  .bar-bg{flex:0 0 110px;width:110px;height:4px;background:var(--surface3);border-radius:2px;margin:0 10px 0 auto}
   .bar-fill{height:100%;border-radius:2px;background:var(--accent)}
+  .ticker-row>.ticker-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .section-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
   .weekly-digest-btn{width:100%;padding:12px;background:var(--accent2);border:1px dashed var(--accent3);border-radius:var(--r2);cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--accent);display:flex;align-items:center;justify-content:center;gap:6px;transition:all .2s;margin-bottom:16px}
   .weekly-digest-btn:hover{background:var(--accent3)}
@@ -258,7 +259,7 @@ let state={
   entries:[],memos:[],
   driveFileId:null,driveSynced:false,driveToken:null,
   sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
-  tickerTags:{},portSelectMode:false,portSelected:{},
+  tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),selectedDay:null,
@@ -274,7 +275,7 @@ function load(){
       state.driveFileId=s.driveFileId||null;
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
-      state.tickerTags=s.tickerTags||{};
+      state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -287,7 +288,7 @@ function save(){
     entries:state.entries,memos:state.memos,driveFileId:state.driveFileId,
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
-    tickerTags:state.tickerTags,
+    tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -694,32 +695,57 @@ function closeMemoView(){
 }
 
 // Open memo from ticker chip in log
+function lookupCompanyName(symbol){
+  const bare=symbol.replace(/^\$/,'').toUpperCase();
+  const tag=state.tickerTags[bare];
+  if(tag&&tag.name)return tag.name;                     // manual override wins
+  const h=state.portfolio.find(x=>x.symbol===bare);
+  return h?h.name:'';                                    // otherwise from the CSV
+}
+
 function openTickerMemo(ticker){
   const t=ticker.startsWith('$')?ticker:'$'+ticker;
   const memo=state.memos.find(m=>m.ticker===t||m.ticker===ticker);
-  if(memo){state.activeMemoId=memo.id;setTab('memos');}
-  else{
-    // offer to create
-    const root=document.getElementById('modalRoot');
-    root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <div class="modal-header"><div class="modal-title">${ticker}</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
-        <div style="font-size:13px;color:var(--ink2);margin-bottom:14px">No memo exists for <strong>${ticker}</strong> yet.</div>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-ghost" style="flex:1" onclick="closeModal();toggleFilter('ticker','${ticker}')">Filter logs</button>
-          <button class="btn btn-primary" style="flex:1" onclick="closeModal();prefillNewMemo('${ticker}')">Create memo</button>
+  if(memo){state.activeMemoId=memo.id;setTab('memos');return;}
+  const bare=ticker.replace(/^\$/,'').toUpperCase();
+  const name=lookupCompanyName(bare);
+  const holding=state.portfolio.find(x=>x.symbol===bare);
+  const tag=state.tickerTags[bare]||{};
+  const weightLine=holding?`<span style="font-family:var(--font-mono);font-size:12px;color:var(--ink3)">${(holding.weight_pct*100).toFixed(1)}% of portfolio</span>`:'';
+  const tagLine=[tag.sector,tag.geography].filter(Boolean).join(' · ');
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title">${bare}</div>
+          ${name?`<div style="font-size:13px;color:var(--ink2);margin-top:2px">${name}</div>`:''}
         </div>
+        <button class="icon-btn" onclick="closeModal()">✕</button>
       </div>
-    </div>`;
-  }
+      ${tagLine||weightLine?`<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        ${tagLine?`<span style="font-family:var(--font-mono);font-size:12px;color:var(--hash-txt)">${tagLine}</span>`:''}
+        ${weightLine}
+      </div>`:''}
+      <div style="font-size:13px;color:var(--ink2);margin-bottom:14px">No memo yet.</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-ghost" style="flex:1" onclick="closeModal();toggleFilter('ticker','${bare}')">Filter logs</button>
+        <button class="btn btn-primary" style="flex:1" onclick="closeModal();prefillNewMemo('${bare}')">Create memo</button>
+      </div>
+    </div>
+  </div>`;
 }
 function prefillNewMemo(ticker){
   setTab('memos');
   setTimeout(()=>{
     openNewMemoModal();
     setTimeout(()=>{
+      const bare=ticker.replace(/^\$/,'').toUpperCase();
       const ti=document.getElementById('newMemoTicker');
-      if(ti){ti.value=ticker.startsWith('$')?ticker.slice(1):ticker;}
+      if(ti)ti.value=bare;
+      const ni=document.getElementById('newMemoName');
+      const nm=lookupCompanyName(bare);
+      if(ni&&nm)ni.value=nm;
     },50);
   },50);
 }
@@ -788,7 +814,7 @@ function renderPortfolio(){
   }
 
   // merge in tags
-  const rows=p.map(h=>{const t=state.tickerTags[h.symbol]||{};return{...h,sector:t.sector||'',geography:t.geography||'',gfTicker:t.gfTicker||''};});
+  const rows=p.map(h=>{const t=state.tickerTags[h.symbol]||{};return{...h,name:t.name||h.name||'',sector:t.sector||'',geography:t.geography||'',gfTicker:t.gfTicker||''};});
 
   // summary cards
   const meta=state.portfolioMeta;
@@ -911,7 +937,11 @@ function openTagModal(){
         <datalist id="geoList">${geoOpts}</datalist>
       </div>
       ${single?`<div class="field-row">
-        <div class="field-label">Google Finance ticker override <span style="opacity:.5">(optional — e.g. OTC listing)</span></div>
+        <div class="field-label">Company name <span style="opacity:.5">(override — defaults to broker name)</span></div>
+        <input class="field-input" id="tagNameInput" placeholder="${(lookupCompanyName(syms[0])||'').replace(/"/g,'&quot;')}" value="${(cur.name||'').replace(/"/g,'&quot;')}">
+      </div>
+      <div class="field-row">
+        <div class="field-label">Google Finance ticker <span style="opacity:.5">(override — e.g. OTC listing)</span></div>
         <input class="field-input" id="tagGfInput" placeholder="e.g. OTCMKTS:AUMBF" value="${cur.gfTicker||''}" style="font-family:var(--font-mono)">
       </div>`:''}
       <div class="modal-footer">
@@ -927,11 +957,15 @@ function applyTags(){
   const sector=(document.getElementById('tagSectorInput')?.value||'').trim();
   const geo=(document.getElementById('tagGeoInput')?.value||'').trim();
   const gf=(document.getElementById('tagGfInput')?.value||'').trim();
+  const nameOverride=(document.getElementById('tagNameInput')?.value||'').trim();
   syms.forEach(s=>{
     const t=state.tickerTags[s]||{};
     if(sector)t.sector=sector;
     if(geo)t.geography=geo;
-    if(gf&&syms.length===1)t.gfTicker=gf;
+    if(syms.length===1){
+      if(gf)t.gfTicker=gf;
+      if(nameOverride)t.name=nameOverride;else delete t.name;
+    }
     state.tickerTags[s]=t;
   });
   save();closeModal();
@@ -1256,6 +1290,7 @@ function openOAuthSetup(){
            <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
              <button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="disconnectOAuth()">Disconnect</button>
              <button class="btn btn-ghost" onclick="reAuthenticate()">Re-authenticate</button>
+             <button class="btn btn-ghost" onclick="closeModal();restoreFromDrive()">Restore</button>
              <button class="btn btn-primary" onclick="closeModal();pushToDrive()">Sync now</button>
            </div>`
         : `<div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
@@ -1308,6 +1343,12 @@ function disconnectOAuth(){
   state.oauthExpiry=0;state.driveSynced=false;
   save();closeModal();updateSyncBadge('disconnected');showToast('Disconnected');
 }
+async function restoreFromDrive(){
+  const hasLocal=state.entries.length||state.memos.length||Object.keys(state.tickerTags).length;
+  if(hasLocal&&!confirm('Restore from Drive? This replaces the data on this device with the Drive backup.'))return;
+  await pullFromDrive({silent:false});
+}
+
 function reAuthenticate(){
   state.oauthRefreshToken=null;state.oauthAccessToken=null;
   state.oauthExpiry=0;state.driveSynced=false;
@@ -1334,6 +1375,57 @@ function updateSyncBadge(status){
   else{label.textContent='Connect Drive';}
 }
 
+async function findDriveFile(token){
+  if(state.driveFileId)return state.driveFileId;
+  const res=await fetch(`https://www.googleapis.com/drive/v3/files?q=name%3D'investment-diary.json'+and+trashed%3Dfalse&fields=files(id,name,modifiedTime)`,{headers:{Authorization:`Bearer ${token}`}});
+  const data=await res.json();
+  if(data.files&&data.files.length){
+    state.driveFileId=data.files[0].id;
+    save();
+    return state.driveFileId;
+  }
+  return null;
+}
+
+async function pullFromDrive(opts){
+  const silent=opts&&opts.silent;
+  const token=await getAccessToken();
+  if(!token){if(!silent)showToast('Not connected to Drive');return false;}
+  try{
+    const fileId=await findDriveFile(token);
+    if(!fileId){if(!silent)showToast('No backup found in Drive');return false;}
+    const res=await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,{headers:{Authorization:`Bearer ${token}`}});
+    if(!res.ok)throw new Error('Could not read the Drive backup');
+    const remote=await res.json();
+    if(!remote||typeof remote!=='object')throw new Error('Drive backup is not readable');
+
+    const remoteTime=remote.lastSync?new Date(remote.lastSync).getTime():0;
+    const localTime=state.lastLocalChange||0;
+    const localEmpty=!state.entries.length&&!state.memos.length&&!Object.keys(state.tickerTags).length;
+
+    // Only overwrite local data when the Drive copy is genuinely newer,
+    // or when there is nothing local to lose.
+    if(!localEmpty && remoteTime<=localTime){
+      if(!silent)showToast('Local copy is already up to date');
+      return false;
+    }
+
+    state.entries=remote.entries||[];
+    state.memos=remote.memos||[];
+    state.tickerTags=remote.tickerTags||{};
+    if(remote.portfolio)state.portfolio=remote.portfolio;
+    if(remote.portfolioMeta)state.portfolioMeta=remote.portfolioMeta;
+    if(remote.portfolioSyncedAt)state.portfolioSyncedAt=remote.portfolioSyncedAt;
+    state.lastLocalChange=remoteTime;
+    save();render();
+    showToast('Restored from Drive — '+state.entries.length+' entries, '+state.memos.length+' memos');
+    return true;
+  }catch(e){
+    if(!silent)showToast('Drive restore failed: '+e.message);
+    return false;
+  }
+}
+
 async function pushToDrive(){
   const token = await getAccessToken();
   if(!token){
@@ -1341,7 +1433,13 @@ async function pushToDrive(){
     return;
   }
   updateSyncBadge('syncing');
-  const data=JSON.stringify({entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,lastSync:new Date().toISOString()},null,2);
+  const now=new Date().toISOString();
+  state.lastLocalChange=Date.now();
+  const data=JSON.stringify({
+    entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,
+    portfolio:state.portfolio,portfolioMeta:state.portfolioMeta,portfolioSyncedAt:state.portfolioSyncedAt,
+    lastSync:now
+  },null,2);
   try{
     let fileId=state.driveFileId;
     if(!fileId){
@@ -1372,6 +1470,9 @@ render();
     // Warm up the access token so the first real sync doesn't fail
     const t=await getAccessToken();
     updateSyncBadge(t?'ok':'error');
+    // If this device has no data (new browser, cleared cache), pull the backup down
+    const localEmpty=!state.entries.length&&!state.memos.length&&!Object.keys(state.tickerTags).length;
+    if(t&&localEmpty)await pullFromDrive({silent:true});
   }else if(state.driveSynced){
     state.driveSynced=false;state.driveToken=null;
     save();updateSyncBadge('disconnected');
