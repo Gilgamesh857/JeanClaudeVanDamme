@@ -247,8 +247,8 @@ let state={
   tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
-  newsBatch:null,newsRpm:10,newsAskWindow:null,
-  newsDailyCap:40,newsUsage:{},
+  newsBatch:null,newsAskWindow:null,
+  geminiModel:'gemini-2.5-flash',newsUsage:{},
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -265,8 +265,7 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
-      state.newsRpm=s.newsRpm||10;
-      state.newsDailyCap=s.newsDailyCap||40;state.newsUsage=s.newsUsage||{};
+      state.geminiModel=s.geminiModel||'gemini-2.5-flash';state.newsUsage=s.newsUsage||{};
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -280,8 +279,8 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
-    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,newsRpm:state.newsRpm,
-    newsDailyCap:state.newsDailyCap,newsUsage:state.newsUsage,
+    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,
+    geminiModel:state.geminiModel,newsUsage:state.newsUsage,
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -754,7 +753,20 @@ function prefillNewMemo(ticker){
    RNS / SEDAR+ / ASX feeds later means replacing fetchNewsFor() only.
 ══════════════════════════════════════ */
 
-const GEMINI_MODEL='gemini-2.0-flash';
+/* Model choice matters on the free tier — some have zero quota.
+   Verified against Cloud Console → Generative Language API → Quotas.
+   If a model stops working, check there first. */
+const GEMINI_MODELS={
+  'gemini-2.5-flash':      {label:'2.5 Flash',      rpm:5,  rpd:20, note:'Best quality'},
+  'gemini-2.5-flash-lite': {label:'2.5 Flash Lite', rpm:10, rpd:20, note:'Faster, lighter'},
+  'gemini-3-flash':        {label:'3 Flash',        rpm:5,  rpd:20, note:'Newest'},
+};
+function currentModel(){
+  return GEMINI_MODELS[state.geminiModel] ? state.geminiModel : 'gemini-2.5-flash';
+}
+function modelLimits(){
+  return GEMINI_MODELS[currentModel()];
+}
 
 const NEWS_WINDOWS={
   '24h':{label:'24h', days:1,  phrase:'the last 24 hours',
@@ -786,8 +798,12 @@ function todayKey(){
 function usedToday(){
   return (state.newsUsage&&state.newsUsage[todayKey()])||0;
 }
+function dailyCap(){
+  // Leave one in reserve so an ad-hoc lookup is always possible
+  return Math.max(1,modelLimits().rpd-1);
+}
 function budgetLeft(){
-  return Math.max(0,(state.newsDailyCap||40)-usedToday());
+  return Math.max(0,dailyCap()-usedToday());
 }
 function recordUsage(){
   const k=todayKey();
@@ -923,7 +939,7 @@ async function fetchNewsFor(symbol,winKey){
   const ctx=tickerContext(symbol);
   const prompt=buildNewsPrompt(ctx,win);
 
-  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${state.geminiKey}`,{
+  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent?key=${state.geminiKey}`,{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
@@ -1112,8 +1128,8 @@ function staleTickers(universe){
    pausable, resumable, and cancellable so a long sweep is never a trap. */
 
 function paceMs(){
-  const rpm=Math.max(1,state.newsRpm||10);
-  return Math.ceil(60000/rpm)+500;   // a little headroom
+  const rpm=Math.max(1,modelLimits().rpm);
+  return Math.ceil(60000/rpm)+2000;   // generous headroom — RPM limits are strict
 }
 
 async function runNewsBatch(tickers,label){
@@ -1310,13 +1326,13 @@ function renderNews(){
   </div>`;
 
   const used=usedToday();
-  const cap=state.newsDailyCap||40;
+  const cap=dailyCap();
   const left=budgetLeft();
   const pct=Math.min(100,Math.round(used/cap*100));
   const budgetBar=`<div style="margin-bottom:12px">
     <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:11px;color:var(--ink3);margin-bottom:4px">
-      <span>Today: ${used} of ${cap}</span>
-      <span style="color:${left?'var(--ink3)':'var(--warn-txt)'}">${left?`${left} left`:'spent — resets tomorrow'}</span>
+      <span>Today: ${used} of ${cap} <span style="opacity:.6">· ${modelLimits().label}</span></span>
+      <span style="color:${left?'var(--ink3)':'var(--warn-txt)'}">${left?`${left} left`:'spent — resets midnight PT'}</span>
     </div>
     <div style="height:3px;background:var(--surface3);border-radius:2px;overflow:hidden">
       <div style="height:100%;width:${pct}%;background:${left?'var(--accent)':'var(--warn-txt)'};border-radius:2px;transition:width .3s"></div>
@@ -1491,24 +1507,25 @@ function openGeminiSetup(){
         <input class="field-input" id="geminiKeyInput" type="password" placeholder="AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
       </div>
       <div class="field-row">
-        <div class="field-label">Daily cap <span style="opacity:.5">— requests per day</span></div>
-        <div class="filter-chip-row" style="margin-bottom:4px">
-          ${[20,40,60,100,200].map(n=>`<div class="filter-chip ${(state.newsDailyCap||40)===n?'active':''}" data-cap="${n}" onclick="setNewsDailyCap(${n})">${n}</div>`).join('')}
+        <div class="field-label">Model</div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          ${Object.keys(GEMINI_MODELS).map(k=>{
+            const m=GEMINI_MODELS[k];
+            const sel=currentModel()===k;
+            return `<div onclick="setGeminiModel('${k}')" style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
+              <div>
+                <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'}">${m.label}</div>
+                <div style="font-size:11px;color:var(--ink3)">${m.note}</div>
+              </div>
+              <div style="font-family:var(--font-mono);font-size:11px;color:var(--ink3);text-align:right">
+                ${m.rpd}/day<br>${m.rpm}/min
+              </div>
+            </div>`;
+          }).join('')}
         </div>
-        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5">
-          Used today: <strong style="color:var(--ink)">${usedToday()}</strong>. The free tier's daily
-          limit is the real constraint — set this below it and a full sweep
-          rolls across several days rather than failing halfway.
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field-label">Pace <span style="opacity:.5">— requests per minute</span></div>
-        <div class="filter-chip-row" style="margin-bottom:4px">
-          ${[5,10,15,30,60].map(n=>`<div class="filter-chip ${(state.newsRpm||10)===n?'active':''}" data-rpm="${n}" onclick="setNewsRpm(${n})">${n}</div>`).join('')}
-        </div>
-        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5">
-          The free tier limits requests per minute. 10 is a safe default.<br>
-          Only raise this if you have enabled billing.
+        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5;margin-top:8px">
+          Free-tier limits, verified in Cloud Console.<br>
+          Used today: <strong style="color:${budgetLeft()?'var(--ink)':'var(--warn-txt)'}">${usedToday()} of ${dailyCap()}</strong>${budgetLeft()?'':' — resets at midnight Pacific'}
         </div>
       </div>
       <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
@@ -1523,17 +1540,13 @@ function openGeminiSetup(){
   </div>`;
   setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
 }
-function setNewsRpm(n){
-  state.newsRpm=n;save();
-  document.querySelectorAll('[data-rpm]').forEach(el=>{
-    el.classList.toggle('active',Number(el.dataset.rpm)===n);
-  });
-}
-function setNewsDailyCap(n){
-  state.newsDailyCap=n;save();
-  document.querySelectorAll('[data-cap]').forEach(el=>{
-    el.classList.toggle('active',Number(el.dataset.cap)===n);
-  });
+function setGeminiModel(m){
+  if(!GEMINI_MODELS[m])return;
+  const key=document.getElementById('geminiKeyInput')?.value?.trim();
+  state.geminiModel=m;
+  if(key)state.geminiKey=key;   // don't lose a key being typed
+  save();
+  openGeminiSetup();            // repaint so the selection and limits update
 }
 function saveGeminiKey(){
   const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
