@@ -324,9 +324,11 @@ function filteredEntries(){
 }
 function setTab(tab,opts){
   state.activeTab=tab;
-  state.activeMemoId=(opts&&opts.memoId)||null;
-  state.activeNewsTicker=(tab==='news'&&opts&&opts.ticker)?opts.ticker:(tab==='news'?state.activeNewsTicker:null);
-  state.activeTicker=(tab==='tickers'&&opts&&opts.ticker)?opts.ticker:(tab==='tickers'?state.activeTicker:null);
+  // A bare tab click always lands on the list. Only an explicit payload
+  // (e.g. goToTicker) opens a detail view.
+  state.activeMemoId    = (opts&&opts.memoId) || null;
+  state.activeNewsTicker= (tab==='news'    && opts && opts.ticker) ? opts.ticker : null;
+  state.activeTicker    = (tab==='tickers' && opts && opts.ticker) ? opts.ticker : null;
   document.querySelectorAll('.tab').forEach((el,i)=>{
     el.classList.toggle('active',['log','memos','portfolio','news','tickers'][i]===tab);
   });
@@ -1127,7 +1129,7 @@ function cancelNewsBatch(){
 
 function renderBatchBar(){
   const b=state.newsBatch;
-  if(!b)return '';
+  if(!b)return '<div id="batchBar"></div>';
   const pct=b.total?Math.round(b.done/b.total*100):0;
   const waiting=b.waitingUntil&&b.waitingUntil>Date.now();
   const secs=waiting?Math.ceil((b.waitingUntil-Date.now())/1000):0;
@@ -1139,7 +1141,7 @@ function renderBatchBar(){
   else if(b.current)      status=`searching ${b.current}…`;
   else                    status='starting…';
 
-  return `<div style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px">
+  return `<div id="batchBar" style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
       <div style="min-width:0">
         <div style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">${b.done} of ${b.total}${b.failed?` · ${b.failed} failed`:''}</div>
@@ -1188,7 +1190,7 @@ function renderNews(){
   },0);
 
   const w=currentWindow();
-  const staleCount=staleTickers().length;
+  const staleCount=staleTickers(universe).length;
 
   const windowPicker=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
     <span class="section-label" style="margin:0">Window</span>
@@ -1209,8 +1211,9 @@ function renderNews(){
   const rows=universe.map(t=>{
     const c=state.newsCache[t.symbol];
     const loading=!!state.newsLoading[t.symbol];
-    const ctx=tickerContext(t.symbol);
-    const name=ctx.legalName;
+    const tag=state.tickerTags[t.symbol]||{};
+    const holding=state.portfolio.find(h=>h.symbol===t.symbol);
+    const name=tag.legalName||tag.name||(holding?holding.name:'')||'';
 
     let right,statusLine;
     if(loading){
@@ -2289,7 +2292,10 @@ function ensureBatchTicker(){
   if(state.newsBatch&&!batchTicker){
     batchTicker=setInterval(()=>{
       if(!state.newsBatch){clearInterval(batchTicker);batchTicker=null;return;}
-      if(state.activeTab==='news'&&!state.activeNewsTicker)render();
+      // Repaint only the progress bar — a full render on a 68-row list every
+      // second makes the whole app feel unresponsive
+      const bar=document.getElementById('batchBar');
+      if(bar)bar.outerHTML=renderBatchBar();
     },1000);
   }else if(!state.newsBatch&&batchTicker){
     clearInterval(batchTicker);batchTicker=null;
