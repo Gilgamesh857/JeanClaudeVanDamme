@@ -247,6 +247,7 @@ let state={
   tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
+  newsBatch:null,newsRpm:10,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -263,6 +264,7 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
+      state.newsRpm=s.newsRpm||10;
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -276,7 +278,7 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
-    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,
+    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,newsRpm:state.newsRpm,
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -351,6 +353,7 @@ function renderFilterChips(){
 function render(){
   renderFilterChips();
   refreshSyncBadge();
+  ensureBatchTicker();
   const el=document.getElementById('mainContent');
   if(state.activeTab==='log')el.innerHTML=renderLog();
   else if(state.activeTab==='memos')renderMemosTab(el);
@@ -901,8 +904,23 @@ async function fetchNewsFor(symbol){
 
   if(!res.ok){
     let msg=res.status===400?'Invalid API key or request':`Gemini error ${res.status}`;
-    try{const e=await res.json();if(e.error&&e.error.message)msg=e.error.message;}catch(_){}
-    throw new Error(msg);
+    let retryAfter=0;
+    try{
+      const e=await res.json();
+      if(e.error&&e.error.message)msg=e.error.message;
+      // Google returns a RetryInfo block telling us how long to wait
+      const details=(e.error&&e.error.details)||[];
+      const ri=details.find(d=>(d['@type']||'').includes('RetryInfo'));
+      if(ri&&ri.retryDelay){
+        const m=String(ri.retryDelay).match(/([\d.]+)s/);
+        if(m)retryAfter=Math.ceil(parseFloat(m[1]));
+      }
+    }catch(_){}
+    const err=new Error(msg);
+    err.status=res.status;
+    err.rateLimited=(res.status===429);
+    err.retryAfter=retryAfter||(res.status===429?30:0);
+    throw err;
   }
 
   const data=await res.json();
@@ -951,66 +969,196 @@ function parseNewsJson(text){
 }
 
 // ── Orchestration ──
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// Returns 'ok' | 'error' | 'aborted'
 async function fetchNewsForTicker(symbol,opts){
   const s=symbol.replace(/^\$/,'').toUpperCase();
-  if(!state.geminiKey){openGeminiSetup();return;}
-  if(state.newsLoading[s])return;
+  if(!state.geminiKey){openGeminiSetup();return 'error';}
+  if(state.newsLoading[s])return 'error';
+  const silent=opts&&opts.silent;
+  const maxTries=3;
+
   state.newsLoading[s]=true;render();
   try{
-    const digest=await fetchNewsFor(s);
-    state.newsCache[s]=digest;
-    save();
-    if(state.driveSynced)scheduleDriveSync();
-  }catch(e){
-    state.newsCache[s]={symbol:s,error:e.message,fetchedAt:new Date().toISOString(),items:[]};
-    save();
-    if(!(opts&&opts.silent))showToast('News fetch failed: '+e.message);
+    for(let attempt=1;attempt<=maxTries;attempt++){
+      if(state.newsBatch&&state.newsBatch.cancel)return 'aborted';
+      try{
+        const digest=await fetchNewsFor(s);
+        state.newsCache[s]=digest;
+        save();
+        if(state.driveSynced)scheduleDriveSync();
+        return 'ok';
+      }catch(e){
+        // Rate limited — wait it out and try again rather than recording a failure
+        if(e.rateLimited&&attempt<maxTries){
+          const wait=Math.max(e.retryAfter||30,15)*1000*attempt;
+          if(state.newsBatch){
+            state.newsBatch.waitingUntil=Date.now()+wait;
+            state.newsBatch.note='rate limited — waiting '+Math.ceil(wait/1000)+'s';
+            render();
+          }else if(!silent){
+            showToast('Rate limited — retrying in '+Math.ceil(wait/1000)+'s');
+          }
+          await sleep(wait);
+          if(state.newsBatch){
+            state.newsBatch.waitingUntil=0;
+            state.newsBatch.note='';
+          }
+          continue;
+        }
+        // Genuine failure, or we've run out of retries
+        state.newsCache[s]={
+          symbol:s,
+          error:e.rateLimited?'Rate limit — try again in a minute':e.message,
+          rateLimited:!!e.rateLimited,
+          fetchedAt:new Date().toISOString(),
+          items:[]
+        };
+        save();
+        if(!silent)showToast(e.rateLimited?'Rate limited — pause and retry':'News fetch failed: '+e.message);
+        return 'error';
+      }
+    }
+    return 'error';
   }finally{
     delete state.newsLoading[s];
     render();
   }
 }
 
-async function fetchAllNews(){
+/* Free-tier pacing.
+   Gemini's free tier allows a limited number of requests per minute.
+   We space calls out to stay comfortably inside it, and the batch is
+   pausable, resumable, and cancellable so a long sweep is never a trap. */
+
+function paceMs(){
+  const rpm=Math.max(1,state.newsRpm||10);
+  return Math.ceil(60000/rpm)+500;   // a little headroom
+}
+
+async function runNewsBatch(tickers,label){
   if(!state.geminiKey){openGeminiSetup();return;}
-  const universe=newsUniverse();
-  if(!universe.length){showToast('No tickers to fetch');return;}
+  if(!tickers.length){showToast('Nothing to check');return;}
+  if(state.newsBatch){showToast('A batch is already running');return;}
+
   const w=currentWindow();
-  const mins=Math.ceil(universe.length*5/60);
-  if(!confirm(`Check all ${universe.length} tickers for news in ${w.phrase}?\n\nEach is searched separately, roughly ${mins} minute${mins===1?'':'s'} in total.`))return;
-  for(const t of universe){
-    await fetchNewsForTicker(t.symbol,{silent:true});
+  const est=Math.ceil(tickers.length*paceMs()/60000);
+  const ok=confirm(
+    `Check ${tickers.length} ticker${tickers.length===1?'':'s'} for news in ${w.phrase}?\n\n`+
+    `Paced for the free tier — roughly ${est} minute${est===1?'':'s'}.\n`+
+    `You can leave this tab open and come back; the app keeps working.`
+  );
+  if(!ok)return;
+
+  state.newsBatch={
+    total:tickers.length, done:0, ok:0, failed:0,
+    current:null, cancel:false, paused:false,
+    waitingUntil:0, note:'', label:label||'News',
+    startedAt:Date.now(),
+  };
+  render();
+
+  for(let i=0;i<tickers.length;i++){
+    if(state.newsBatch.cancel)break;
+
+    // Honour a pause without burning CPU
+    while(state.newsBatch.paused&&!state.newsBatch.cancel){
+      await sleep(300);
+    }
+    if(state.newsBatch.cancel)break;
+
+    const sym=tickers[i].symbol||tickers[i];
+    state.newsBatch.current=sym;
+    render();
+
+    const result=await fetchNewsForTicker(sym,{silent:true});
+    if(result==='aborted')break;
+
+    state.newsBatch.done++;
+    if(result==='ok')state.newsBatch.ok++; else state.newsBatch.failed++;
+    render();
+
+    // Pace the next call, unless we're done
+    if(i<tickers.length-1&&!state.newsBatch.cancel){
+      const gap=paceMs();
+      state.newsBatch.waitingUntil=Date.now()+gap;
+      render();
+      await sleep(gap);
+      state.newsBatch.waitingUntil=0;
+    }
   }
-  showToast('Checked all '+universe.length+' tickers');
+
+  const b=state.newsBatch;
+  const cancelled=b.cancel;
+  const {ok:okCount,failed}=b;
+  state.newsBatch=null;
+  render();
+
+  if(cancelled){
+    showToast(`Stopped — ${okCount} checked`);
+  }else if(failed){
+    showToast(`Checked ${okCount}, ${failed} failed`);
+  }else{
+    showToast(`Checked ${okCount} ticker${okCount===1?'':'s'}`);
+  }
+}
+
+async function fetchAllNews(){
+  await runNewsBatch(newsUniverse(),'All tickers');
+}
+async function fetchStaleNews(){
+  const stale=staleTickers();
+  if(!stale.length){showToast('Everything is current');return;}
+  await runNewsBatch(stale,'Stale tickers');
+}
+
+function pauseNewsBatch(){
+  if(!state.newsBatch)return;
+  state.newsBatch.paused=!state.newsBatch.paused;
+  render();
+}
+function cancelNewsBatch(){
+  if(!state.newsBatch)return;
+  state.newsBatch.cancel=true;
+  state.newsBatch.paused=false;
+  render();
+}
+
+function renderBatchBar(){
+  const b=state.newsBatch;
+  if(!b)return '';
+  const pct=b.total?Math.round(b.done/b.total*100):0;
+  const waiting=b.waitingUntil&&b.waitingUntil>Date.now();
+  const secs=waiting?Math.ceil((b.waitingUntil-Date.now())/1000):0;
+
+  let status;
+  if(b.paused)            status='paused';
+  else if(b.note)         status=b.note;
+  else if(waiting)        status=`next in ${secs}s`;
+  else if(b.current)      status=`searching ${b.current}…`;
+  else                    status='starting…';
+
+  return `<div style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+      <div style="min-width:0">
+        <div style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">${b.done} of ${b.total}${b.failed?` · ${b.failed} failed`:''}</div>
+        <div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${status}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-ghost btn-sm" onclick="pauseNewsBatch()">${b.paused?'Resume':'Pause'}</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="cancelNewsBatch()">Stop</button>
+      </div>
+    </div>
+    <div style="height:4px;background:var(--surface3);border-radius:2px;overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:2px;transition:width .3s"></div>
+    </div>
+  </div>`;
 }
 
 function setNewsWindow(w){
   if(!NEWS_WINDOWS[w])return;
   state.newsWindow=w;save();render();
-}
-
-function staleTickers(){
-  const w=currentWindow();
-  const cutoff=Date.now()-w.staleMs;
-  return newsUniverse().filter(t=>{
-    const c=state.newsCache[t.symbol];
-    if(!c||!c.fetchedAt)return true;
-    if(c.window&&c.window!==state.newsWindow)return true;   // asked a different question last time
-    return new Date(c.fetchedAt).getTime()<cutoff;
-  });
-}
-
-async function fetchStaleNews(){
-  if(!state.geminiKey){openGeminiSetup();return;}
-  const stale=staleTickers();
-  if(!stale.length){showToast('Everything is current');return;}
-  const w=currentWindow();
-  const mins=Math.ceil(stale.length*5/60);
-  if(!confirm(`Check ${stale.length} ticker${stale.length===1?'':'s'} for news in ${w.phrase}?\n\nRuns one at a time — roughly ${mins} minute${mins===1?'':'s'}.`))return;
-  for(const t of stale){
-    await fetchNewsForTicker(t.symbol,{silent:true});
-  }
-  showToast('Checked '+stale.length+' ticker'+(stale.length===1?'':'s'));
 }
 
 /* ── News tab ── */
@@ -1049,9 +1197,10 @@ function renderNews(){
     </div>
   </div>`;
 
+  const batching=!!state.newsBatch;
   const toolbar=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-    <button class="btn btn-primary btn-sm" ${anyLoading||!staleCount?'disabled':''} onclick="fetchStaleNews()">↻ Check ${staleCount||'all'} ${staleCount===1?'ticker':'tickers'}</button>
-    <button class="btn btn-ghost btn-sm" ${anyLoading?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
+    <button class="btn btn-primary btn-sm" ${anyLoading||batching||!staleCount?'disabled':''} onclick="fetchStaleNews()">↻ Check ${staleCount||'all'} ${staleCount===1?'ticker':'tickers'}</button>
+    <button class="btn btn-ghost btn-sm" ${anyLoading||batching?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
     <button class="btn btn-ghost btn-sm" onclick="openGeminiSetup()">⚙</button>
   </div>`;
 
@@ -1071,8 +1220,9 @@ function renderNews(){
       right=`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Fetch</button>`;
       statusLine=`<span style="color:var(--ink3)">not fetched</span>`;
     }else if(c.error){
-      right=`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Retry</button>`;
-      statusLine=`<span style="color:var(--danger)">${c.error.slice(0,40)}</span>`;
+      const rl=c.rateLimited;
+      right=`<button class="btn btn-ghost btn-sm" ${batching?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Retry</button>`;
+      statusLine=`<span style="color:${rl?'var(--warn-txt)':'var(--danger)'}">${rl?'rate limited — retry':c.error.slice(0,40)}</span>`;
     }else{
       const material=(c.items||[]).filter(i=>i.material!==false);
       const pos=material.filter(i=>i.impact==='positive').length;
@@ -1102,7 +1252,7 @@ function renderNews(){
     </div>`;
   }).join('');
 
-  return windowPicker+toolbar+summary+`<div class="ticker-list" style="margin-bottom:60px">${rows}</div>`;
+  return windowPicker+toolbar+renderBatchBar()+summary+`<div class="ticker-list" style="margin-bottom:60px">${rows}</div>`;
 }
 
 function openNewsFor(sym){
@@ -1209,6 +1359,16 @@ function openGeminiSetup(){
         <div class="field-label">API key</div>
         <input class="field-input" id="geminiKeyInput" type="password" placeholder="AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
       </div>
+      <div class="field-row">
+        <div class="field-label">Pace <span style="opacity:.5">— requests per minute</span></div>
+        <div class="filter-chip-row" style="margin-bottom:4px">
+          ${[5,10,15,30,60].map(n=>`<div class="filter-chip ${(state.newsRpm||10)===n?'active':''}" data-rpm="${n}" onclick="setNewsRpm(${n})">${n}</div>`).join('')}
+        </div>
+        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5">
+          The free tier limits requests per minute. 10 is a safe default.<br>
+          Only raise this if you have enabled billing.
+        </div>
+      </div>
       <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
         Stored in this browser only. Never sent anywhere but Google.
       </div>
@@ -1220,6 +1380,13 @@ function openGeminiSetup(){
     </div>
   </div>`;
   setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
+}
+function setNewsRpm(n){
+  state.newsRpm=n;save();
+  // Update the chips in place — reopening the modal would discard a typed key
+  document.querySelectorAll('[data-rpm]').forEach(el=>{
+    el.classList.toggle('active',Number(el.dataset.rpm)===n);
+  });
 }
 function saveGeminiKey(){
   const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
@@ -2114,6 +2281,19 @@ async function pushToDrive(){
     }
     state.driveFileId=fileId;save();updateSyncBadge('ok');
   }catch(err){updateSyncBadge('error');showToast('Drive sync failed');}
+}
+
+// Keep the batch countdown honest without re-rendering the whole app
+let batchTicker=null;
+function ensureBatchTicker(){
+  if(state.newsBatch&&!batchTicker){
+    batchTicker=setInterval(()=>{
+      if(!state.newsBatch){clearInterval(batchTicker);batchTicker=null;return;}
+      if(state.activeTab==='news'&&!state.activeNewsTicker)render();
+    },1000);
+  }else if(!state.newsBatch&&batchTicker){
+    clearInterval(batchTicker);batchTicker=null;
+  }
 }
 
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
