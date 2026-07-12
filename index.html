@@ -241,6 +241,7 @@
     <div class="tab active" onclick="setTab('log')">Log</div>
     <div class="tab" onclick="setTab('memos')">Memos</div>
     <div class="tab" onclick="setTab('portfolio')">Portfolio</div>
+    <div class="tab" onclick="setTab('news')">News</div>
     <div class="tab" onclick="setTab('calendar')">Calendar</div>
     <div class="tab" onclick="setTab('tickers')">Tickers</div>
     <div class="tab" onclick="setTab('analytics')">Analytics</div>
@@ -260,6 +261,8 @@ let state={
   driveFileId:null,driveSynced:false,driveToken:null,
   sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
   tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
+  geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
+  activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),selectedDay:null,
@@ -276,6 +279,7 @@ function load(){
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
+      state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -289,6 +293,7 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
+    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -332,17 +337,19 @@ function filteredEntries(){
   if(state.filterHashes.length)list=list.filter(e=>state.filterHashes.every(h=>e.hashes.includes(h)));
   return list;
 }
-function setTab(tab){
+function setTab(tab,opts){
   state.activeTab=tab;
-  state.activeMemoId=null;
+  state.activeMemoId=(opts&&opts.memoId)||null;
+  state.activeNewsTicker=(tab==='news'&&opts&&opts.ticker)?opts.ticker:(tab==='news'?state.activeNewsTicker:null);
+  state.activeTicker=(tab==='tickers'&&opts&&opts.ticker)?opts.ticker:(tab==='tickers'?state.activeTicker:null);
   document.querySelectorAll('.tab').forEach((el,i)=>{
-    el.classList.toggle('active',['log','memos','portfolio','calendar','tickers','analytics'][i]===tab);
+    el.classList.toggle('active',['log','memos','portfolio','news','calendar','tickers','analytics'][i]===tab);
   });
   // show/hide search bar
   const sw=document.getElementById('searchBarWrap');
-  if(sw)sw.style.display=(tab==='memos'||tab==='portfolio'?'none':'flex');
+  if(sw)sw.style.display=(tab==='memos'||tab==='portfolio'||tab==='news'?'none':'flex');
   const fc=document.getElementById('filterChips');
-  if(fc&&(tab==='memos'||tab==='portfolio'))fc.innerHTML='';
+  if(fc&&(tab==='memos'||tab==='portfolio'||tab==='news'))fc.innerHTML='';
   render();
 }
 function onSearch(){state.searchQuery=document.getElementById('searchInput').value;render();}
@@ -365,12 +372,14 @@ function render(){
   if(state.activeTab==='log')el.innerHTML=renderLog();
   else if(state.activeTab==='memos')renderMemosTab(el);
   else if(state.activeTab==='portfolio')el.innerHTML=renderPortfolio();
+  else if(state.activeTab==='news')el.innerHTML=renderNews();
   else if(state.activeTab==='calendar')el.innerHTML=renderCalendar();
   else if(state.activeTab==='tickers')el.innerHTML=renderTickers();
   else el.innerHTML=renderAnalytics();
   // FAB
   const fab=document.getElementById('fab');
-  if(state.activeTab==='memos'&&state.activeMemoId){fab.style.display='none';}
+  if(state.activeTab==='news'){fab.style.display='none';}
+  else if(state.activeTab==='memos'&&state.activeMemoId){fab.style.display='none';}
   else if(state.activeTab==='memos'){fab.textContent='+';fab.style.display='flex';}
   else{fab.textContent='+';fab.style.display='flex';}
 }
@@ -402,10 +411,9 @@ function renderLog(){
   return composeHtml+entries.map(e=>renderEntry(e)).join('');
 }
 function renderEntry(e,compact=false){
-  const tickerTags=e.tickers.map(t=>`<span class="tag ticker" onclick="openTickerMemo('${t}')">${t}</span>`).join('');
+  const tickerTags=e.tickers.map(t=>`<span class="tag ticker" onclick="event.stopPropagation();goToTicker('${t}')">${t}</span>`).join('');
   const hashTags=e.hashes.map(h=>`<span class="tag hash" onclick="toggleFilter('hash','${h}')">${h}</span>`).join('');
   const bodyHtml=highlight(renderMd(e.text),state.searchQuery);
-  const newsSection=e.showNews?renderNewsPanel(e):'';
   if(compact)return`<div style="padding:8px 0;border-bottom:1px solid var(--border)">
     <div class="entry-date">${fmtDate(e.ts)}</div>
     <div class="entry-body" style="font-size:13px;margin-top:4px">${bodyHtml}</div>
@@ -421,13 +429,13 @@ function renderEntry(e,compact=false){
     </div>
     <div class="entry-body">${bodyHtml}</div>
     <div class="entry-tags">${tickerTags}${hashTags}</div>
-    ${e.tickers.length?`<button class="entry-news-btn" onclick="toggleNews('${e.id}')">${e.showNews?'▲ Hide news digest':'↓ Fetch news for '+e.tickers.join(', ')}</button>`:''}
-    ${newsSection}
+    ${e.tickers.length?e.tickers.map(t=>{
+      const s=t.replace(/^\$/,'').toUpperCase();
+      const cached=state.newsCache[s];
+      const n=cached&&cached.items?cached.items.filter(i=>i.material!==false).length:0;
+      return `<button class="entry-news-btn" style="margin-top:6px" onclick="event.stopPropagation();openNewsFor('${s}')">${cached?`📰 ${s} — ${n?n+' item'+(n===1?'':'s'):'no material news'} · ${fmtDateRelative(cached.fetchedAt)}`:`↓ Fetch news for ${s}`}</button>`;
+    }).join(''):''}
   </div>`;
-}
-function renderNewsPanel(e){
-  if(!e.newsItems){return`<div class="news-panel"><div class="news-panel-header">News digest — ${e.tickers.join(', ')}</div><div class="news-config"><strong>AI news digest</strong> — connect an API key to fetch and summarise recent news for these tickers.</div></div>`;}
-  return`<div class="news-panel"><div class="news-panel-header">News digest · ${fmtDateShort(e.newsTs)}</div>${e.newsItems.map(n=>`<div class="news-item"><div class="news-item-title">${n.title}</div><div class="news-item-meta">${n.source} · ${n.ticker}</div></div>`).join('')}</div>`;
 }
 
 /* ══════════════════════════════════════
@@ -706,7 +714,7 @@ function lookupCompanyName(symbol){
 function openTickerMemo(ticker){
   const t=ticker.startsWith('$')?ticker:'$'+ticker;
   const memo=state.memos.find(m=>m.ticker===t||m.ticker===ticker);
-  if(memo){state.activeMemoId=memo.id;setTab('memos');return;}
+  if(memo){setTab('memos',{memoId:memo.id});return;}
   const bare=ticker.replace(/^\$/,'').toUpperCase();
   const name=lookupCompanyName(bare);
   const holding=state.portfolio.find(x=>x.symbol===bare);
@@ -750,6 +758,495 @@ function prefillNewMemo(ticker){
   },50);
 }
 
+
+/* ══════════════════════════════════════
+   NEWS  —  provider layer + digest UI
+   The provider is deliberately isolated: swapping Gemini for real
+   RNS / SEDAR+ / ASX feeds later means replacing fetchNewsFor() only.
+══════════════════════════════════════ */
+
+const GEMINI_MODEL='gemini-2.0-flash';
+
+const NEWS_WINDOWS={
+  '24h':{label:'24h', days:1,  phrase:'the last 24 hours',
+         staleMs:12*3600000,
+         note:'This is a daily check. Only report announcements published in the last 24 hours. If nothing was published in that window, say so plainly and return an empty items array — that is the expected and correct answer on most days. Do not reach back further to find something to report.'},
+  '7d': {label:'7d',  days:7,  phrase:'the last 7 days',
+         staleMs:3*86400000,
+         note:'Only report announcements published in the last 7 days. An empty result is a legitimate answer. Do not widen the window to fill the list.'},
+  '30d':{label:'30d', days:30, phrase:'the last 30 days',
+         staleMs:7*86400000,
+         note:'Only report announcements published in the last 30 days.'},
+  '90d':{label:'90d', days:90, phrase:'the last 90 days',
+         staleMs:21*86400000,
+         note:'Report announcements published in the last 90 days. This is a catch-up review, so include anything material even if you have to work back through several months of filings.'},
+};
+function currentWindow(){return NEWS_WINDOWS[state.newsWindow]||NEWS_WINDOWS['7d'];}
+function windowCutoffISO(){
+  const w=currentWindow();
+  return new Date(Date.now()-w.days*86400000).toISOString().slice(0,10);
+}
+
+// Every ticker we care about: portfolio holdings + anything mentioned in the log
+function newsUniverse(){
+  const map={};
+  state.portfolio.forEach(h=>{
+    map[h.symbol]={symbol:h.symbol,inPortfolio:true,weight:h.weight_pct||0};
+  });
+  state.entries.forEach(e=>{
+    e.tickers.forEach(t=>{
+      const s=t.replace(/^\$/,'').toUpperCase();
+      if(!map[s])map[s]={symbol:s,inPortfolio:false,weight:0};
+    });
+  });
+  return Object.values(map).sort((a,b)=>{
+    if(a.inPortfolio!==b.inPortfolio)return a.inPortfolio?-1:1;
+    return b.weight-a.weight;
+  });
+}
+
+// Everything we know about a ticker, to steer the search and the analysis
+function tickerContext(symbol){
+  const s=symbol.replace(/^\$/,'').toUpperCase();
+  const tag=state.tickerTags[s]||{};
+  const holding=state.portfolio.find(h=>h.symbol===s);
+  const memo=state.memos.find(m=>m.ticker==='$'+s||m.ticker===s);
+  return {
+    symbol:s,
+    legalName: tag.legalName||tag.name||(holding?holding.name:'')||'',
+    sector:    tag.sector||'',
+    geography: tag.geography||'',
+    weight:    holding?holding.weight_pct:0,
+    inPortfolio: !!holding,
+    memo,
+    thesis:    memo&&memo.sections?(memo.sections.thesis||''):'',
+    risks:     memo&&memo.sections?(memo.sections.risks||''):'',
+    catalysts: memo&&memo.sections?(memo.sections.catalysts||''):'',
+    conviction: memo?memo.conviction:0,
+    recentLogs: state.entries
+      .filter(e=>e.tickers.some(t=>t.replace(/^\$/,'').toUpperCase()===s))
+      .sort((a,b)=>new Date(b.ts)-new Date(a.ts))
+      .slice(0,3)
+      .map(e=>({date:fmtDateShort(e.ts),text:e.text.slice(0,300)})),
+  };
+}
+
+function buildNewsPrompt(ctx){
+  const w=currentWindow();
+  const cutoff=windowCutoffISO();
+  const today=new Date().toISOString().slice(0,10);
+
+  const hasMemo=!!(ctx.thesis||ctx.risks||ctx.catalysts);
+  const thesisBlock=hasMemo
+    ? `The investor's own memo on this holding:
+${ctx.thesis?`THESIS: ${ctx.thesis}`:''}
+${ctx.risks?`RISKS: ${ctx.risks}`:''}
+${ctx.catalysts?`CATALYSTS: ${ctx.catalysts}`:''}
+${ctx.conviction?`CONVICTION: ${ctx.conviction}/5`:''}`
+    : `The investor has not written a memo for this holding yet. Assess relevance against a generic long-horizon thesis for a ${ctx.sector||'resources'} company${ctx.geography?' operating in '+ctx.geography:''}: does this news change the resource or reserve picture, the funding position, the permitting or political risk, management's credibility, or the path to production and cash flow?`;
+
+  const recent=ctx.recentLogs.length
+    ? `\nThe investor's recent notes on this holding:\n`+ctx.recentLogs.map(l=>`- [${l.date}] ${l.text}`).join('\n')
+    : '';
+
+  return `You are checking recent news for ONE company on behalf of a long-horizon private investor. This is a focused single-company task — give it your full attention.
+
+COMPANY: ${ctx.legalName||ctx.symbol}
+TICKER: ${ctx.symbol}${ctx.sector?`\nSECTOR: ${ctx.sector}`:''}${ctx.geography?`\nGEOGRAPHY: ${ctx.geography}`:''}${ctx.inPortfolio?`\nPORTFOLIO WEIGHT: ${(ctx.weight*100).toFixed(1)}%`:'\nNOT HELD — watchlist only.'}
+
+${thesisBlock}${recent}
+
+TIME WINDOW — STRICT
+Today is ${today}. Report ONLY announcements published on or after ${cutoff} (${w.phrase}).
+${w.note}
+Anything published before ${cutoff} must be excluded, however interesting it is.
+
+IDENTIFY THE RIGHT COMPANY
+Small resource companies routinely share ticker symbols across exchanges. Confirm you have the correct company using the legal name and geography above before reporting anything. If you cannot confirm it with confidence, return an empty items array and explain the ambiguity in "overall". Never guess.
+
+SOURCE PRIORITY
+1. Official regulatory announcements — RNS (LSE/AIM), SEDAR+ (TSX/TSX-V), ASX announcements, SEC EDGAR filings.
+2. The company's own press releases and investor relations pages.
+3. Reputable financial media, and only where it reports something material that the above have not covered.
+Ignore promotional content, paid research, forum posts, and speculative commentary. Prefer the primary document over any article describing it, and link to the primary document.
+
+SEARCH PROPERLY
+Search for this specific company's announcements in the window. Check the company's own news or investor relations page and the relevant exchange's announcement feed. Do not rely on memory — you must actually search, and the links you return must be to documents you found.
+
+ON RETURNING NOTHING
+An empty items array is a correct and common answer, especially over a short window. Most companies announce nothing on most days. Do not pad the list, do not stretch the date range, and do not report routine or stale items to appear thorough. Reporting nothing when nothing happened is the right behaviour and is more useful than noise.
+
+OUTPUT
+Return ONLY valid JSON. No markdown fences, no preamble, no commentary.
+
+{
+  "items": [
+    {
+      "date": "YYYY-MM-DD",
+      "headline": "the announcement's actual title",
+      "source": "RNS | SEDAR+ | ASX | SEC | Company release | publication name",
+      "url": "direct link to the original document",
+      "official": true,
+      "summary": "2-3 sentences on what was actually announced, in your own words",
+      "relevance": "What this means for the thesis above. Be specific. Say plainly if it changes nothing. If it strengthens or weakens a particular part of the thesis or a stated risk, name which part.",
+      "impact": "positive" | "negative" | "neutral",
+      "material": true
+    }
+  ],
+  "overall": "2-3 sentences: taken together, what has changed for this holding? If nothing was announced in the window, say exactly that."
+}
+
+Order items newest first. Set "material" to false for routine filings that change nothing (AGM notices, TR-1s, option grants, holding notifications). Set "official" to false for media coverage. Every date must fall on or after ${cutoff}.`;
+}
+
+// ── The provider. Swap this function to change news source. ──
+async function fetchNewsFor(symbol){
+  if(!state.geminiKey)throw new Error('No Gemini API key set');
+  const ctx=tickerContext(symbol);
+  const prompt=buildNewsPrompt(ctx);
+
+  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${state.geminiKey}`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      contents:[{parts:[{text:prompt}]}],
+      tools:[{google_search:{}}],
+      generationConfig:{temperature:0.2}
+    })
+  });
+
+  if(!res.ok){
+    let msg=res.status===400?'Invalid API key or request':`Gemini error ${res.status}`;
+    try{const e=await res.json();if(e.error&&e.error.message)msg=e.error.message;}catch(_){}
+    throw new Error(msg);
+  }
+
+  const data=await res.json();
+  const cand=data.candidates&&data.candidates[0];
+  if(!cand)throw new Error('Gemini returned nothing');
+
+  const text=(cand.content&&cand.content.parts||[]).map(p=>p.text||'').join('');
+
+  // Grounding metadata gives us the URLs Gemini actually consulted
+  const grounding=cand.groundingMetadata||{};
+  const chunks=grounding.groundingChunks||[];
+  const sources=chunks.map(ch=>ch.web).filter(Boolean).map(w=>({title:w.title||'',uri:w.uri||''}));
+
+  const parsed=parseNewsJson(text);
+  const w=currentWindow();
+  // Belt and braces: drop anything the model returned outside the window it was given
+  const cutoffMs=Date.now()-w.days*86400000-86400000; // one day of slack for timezones
+  const items=(parsed.items||[]).filter(it=>{
+    if(!it||!it.date)return true;           // undated — keep, let the user judge
+    const d=new Date(it.date).getTime();
+    return isNaN(d)?true:d>=cutoffMs;
+  });
+  return {
+    symbol:ctx.symbol,
+    legalName:ctx.legalName,
+    items,
+    overall:parsed.overall||'',
+    sources,
+    hadMemo:!!(ctx.thesis||ctx.risks||ctx.catalysts),
+    window:state.newsWindow,
+    fetchedAt:new Date().toISOString(),
+  };
+}
+
+function parseNewsJson(text){
+  let t=(text||'').trim();
+  // Gemini often wraps JSON in a fenced block despite instructions
+  t=t.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+  try{return JSON.parse(t);}catch(_){}
+  // Fall back to the outermost braces
+  const a=t.indexOf('{'),b=t.lastIndexOf('}');
+  if(a>=0&&b>a){
+    try{return JSON.parse(t.slice(a,b+1));}catch(_){}
+  }
+  return {items:[],overall:'Could not read the response. Try fetching again.'};
+}
+
+// ── Orchestration ──
+async function fetchNewsForTicker(symbol,opts){
+  const s=symbol.replace(/^\$/,'').toUpperCase();
+  if(!state.geminiKey){openGeminiSetup();return;}
+  if(state.newsLoading[s])return;
+  state.newsLoading[s]=true;render();
+  try{
+    const digest=await fetchNewsFor(s);
+    state.newsCache[s]=digest;
+    save();
+    if(state.driveSynced)scheduleDriveSync();
+  }catch(e){
+    state.newsCache[s]={symbol:s,error:e.message,fetchedAt:new Date().toISOString(),items:[]};
+    save();
+    if(!(opts&&opts.silent))showToast('News fetch failed: '+e.message);
+  }finally{
+    delete state.newsLoading[s];
+    render();
+  }
+}
+
+async function fetchAllNews(){
+  if(!state.geminiKey){openGeminiSetup();return;}
+  const universe=newsUniverse();
+  if(!universe.length){showToast('No tickers to fetch');return;}
+  const w=currentWindow();
+  const mins=Math.ceil(universe.length*5/60);
+  if(!confirm(`Check all ${universe.length} tickers for news in ${w.phrase}?\n\nEach is searched separately, roughly ${mins} minute${mins===1?'':'s'} in total.`))return;
+  for(const t of universe){
+    await fetchNewsForTicker(t.symbol,{silent:true});
+  }
+  showToast('Checked all '+universe.length+' tickers');
+}
+
+function setNewsWindow(w){
+  if(!NEWS_WINDOWS[w])return;
+  state.newsWindow=w;save();render();
+}
+
+function staleTickers(){
+  const w=currentWindow();
+  const cutoff=Date.now()-w.staleMs;
+  return newsUniverse().filter(t=>{
+    const c=state.newsCache[t.symbol];
+    if(!c||!c.fetchedAt)return true;
+    if(c.window&&c.window!==state.newsWindow)return true;   // asked a different question last time
+    return new Date(c.fetchedAt).getTime()<cutoff;
+  });
+}
+
+async function fetchStaleNews(){
+  if(!state.geminiKey){openGeminiSetup();return;}
+  const stale=staleTickers();
+  if(!stale.length){showToast('Everything is current');return;}
+  const w=currentWindow();
+  const mins=Math.ceil(stale.length*5/60);
+  if(!confirm(`Check ${stale.length} ticker${stale.length===1?'':'s'} for news in ${w.phrase}?\n\nRuns one at a time — roughly ${mins} minute${mins===1?'':'s'}.`))return;
+  for(const t of stale){
+    await fetchNewsForTicker(t.symbol,{silent:true});
+  }
+  showToast('Checked '+stale.length+' ticker'+(stale.length===1?'':'s'));
+}
+
+/* ── News tab ── */
+function renderNews(){
+  if(!state.geminiKey){
+    return `<div class="empty-state">
+      <div class="empty-icon">📰</div>
+      <div class="empty-title">Connect Gemini</div>
+      <div class="empty-body">News digests need a Gemini API key.<br>Free tier is plenty for personal use.</div>
+      <button class="btn btn-primary" style="margin-top:16px" onclick="openGeminiSetup()">Add API key</button>
+    </div>`;
+  }
+
+  const universe=newsUniverse();
+  if(!universe.length){
+    return `<div class="empty-state"><div class="empty-icon">📰</div><div class="empty-title">Nothing to watch yet</div><div class="empty-body">Import a portfolio or log an entry with a $TICKER.</div></div>`;
+  }
+
+  if(state.activeNewsTicker)return renderNewsDetail(state.activeNewsTicker);
+
+  const anyLoading=Object.keys(state.newsLoading).length>0;
+  const cached=universe.filter(t=>state.newsCache[t.symbol]&&!state.newsCache[t.symbol].error).length;
+  const materialCount=universe.reduce((n,t)=>{
+    const c=state.newsCache[t.symbol];
+    if(!c||!c.items)return n;
+    return n+c.items.filter(i=>i.material!==false).length;
+  },0);
+
+  const w=currentWindow();
+  const staleCount=staleTickers().length;
+
+  const windowPicker=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <span class="section-label" style="margin:0">Window</span>
+    <div style="display:flex;gap:4px">
+      ${Object.keys(NEWS_WINDOWS).map(k=>`<div class="filter-chip ${state.newsWindow===k?'active':''}" onclick="setNewsWindow('${k}')">${NEWS_WINDOWS[k].label}</div>`).join('')}
+    </div>
+  </div>`;
+
+  const toolbar=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+    <button class="btn btn-primary btn-sm" ${anyLoading||!staleCount?'disabled':''} onclick="fetchStaleNews()">↻ Check ${staleCount||'all'} ${staleCount===1?'ticker':'tickers'}</button>
+    <button class="btn btn-ghost btn-sm" ${anyLoading?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
+    <button class="btn btn-ghost btn-sm" onclick="openGeminiSetup()">⚙</button>
+  </div>`;
+
+  const summary=cached?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${cached} of ${universe.length} fetched · ${materialCount} material item${materialCount===1?'':'s'}</div>`:'';
+
+  const rows=universe.map(t=>{
+    const c=state.newsCache[t.symbol];
+    const loading=!!state.newsLoading[t.symbol];
+    const ctx=tickerContext(t.symbol);
+    const name=ctx.legalName;
+
+    let right,statusLine;
+    if(loading){
+      right=`<span class="dot pulse" style="background:var(--accent)"></span>`;
+      statusLine=`<span style="color:var(--accent)">searching…</span>`;
+    }else if(!c){
+      right=`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Fetch</button>`;
+      statusLine=`<span style="color:var(--ink3)">not fetched</span>`;
+    }else if(c.error){
+      right=`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Retry</button>`;
+      statusLine=`<span style="color:var(--danger)">${c.error.slice(0,40)}</span>`;
+    }else{
+      const material=(c.items||[]).filter(i=>i.material!==false);
+      const pos=material.filter(i=>i.impact==='positive').length;
+      const neg=material.filter(i=>i.impact==='negative').length;
+      const pills=[
+        pos?`<span style="color:var(--accent)">▲${pos}</span>`:'',
+        neg?`<span style="color:var(--danger)">▼${neg}</span>`:'',
+      ].filter(Boolean).join(' ');
+      const winLabel=c.window&&c.window!==state.newsWindow?`<span style="color:var(--warn-txt)"> ${NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window].label:c.window}</span>`:'';
+      right=`<div style="text-align:right"><div style="font-family:var(--font-mono);font-size:12px">${material.length?pills||material.length:'—'}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${fmtDateRelative(c.fetchedAt)}${winLabel}</div></div>`;
+      statusLine=material.length
+        ?`<span style="color:var(--ink2)">${material.length} item${material.length===1?'':'s'}</span>`
+        :`<span style="color:var(--ink3)">nothing announced</span>`;
+    }
+
+    const weightLine=t.inPortfolio?`${(t.weight*100).toFixed(1)}%`:'watchlist';
+    return `<div class="ticker-row" onclick="openNewsDetail('${t.symbol}')" style="align-items:center">
+      <div style="min-width:0;flex:1">
+        <div style="display:flex;align-items:baseline;gap:6px">
+          <span class="ticker-name">${t.symbol}</span>
+          <span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${weightLine}</span>
+        </div>
+        <div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name||''}</div>
+        <div style="font-size:10px;font-family:var(--font-mono);margin-top:1px">${statusLine}</div>
+      </div>
+      <div style="margin-left:10px;flex-shrink:0">${right}</div>
+    </div>`;
+  }).join('');
+
+  return windowPicker+toolbar+summary+`<div class="ticker-list" style="margin-bottom:60px">${rows}</div>`;
+}
+
+function openNewsFor(sym){
+  const s=sym.replace(/^\$/,'').toUpperCase();
+  setTab('news',{ticker:s});
+  if(!state.newsCache[s]&&state.geminiKey)fetchNewsForTicker(s);
+}
+function openNewsDetail(sym){state.activeNewsTicker=sym;render();}
+function closeNewsDetail(){state.activeNewsTicker=null;render();}
+
+function renderNewsDetail(sym){
+  const c=state.newsCache[sym];
+  const ctx=tickerContext(sym);
+  const loading=!!state.newsLoading[sym];
+
+  const header=`<div style="margin-bottom:14px">
+    <button class="back-btn" onclick="closeNewsDetail()" style="margin-bottom:10px">← News</button>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+      <div style="min-width:0">
+        <div style="font-family:var(--font-serif);font-size:24px">${sym}</div>
+        ${ctx.legalName?`<div style="font-size:13px;color:var(--ink3);font-family:var(--font-mono)">${ctx.legalName}</div>`:''}
+      </div>
+      <button class="btn btn-ghost btn-sm" ${loading?'disabled':''} onclick="fetchNewsForTicker('${sym}')" style="flex-shrink:0">${loading?'Searching…':(c?'↻ Refresh':'Fetch news')}</button>
+    </div>
+    ${ctx.inPortfolio||ctx.sector?`<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;font-family:var(--font-mono);font-size:11px">
+      ${ctx.inPortfolio?`<span style="color:var(--ink3)">${(ctx.weight*100).toFixed(1)}% of portfolio</span>`:'<span style="color:var(--ink3)">watchlist</span>'}
+      ${ctx.sector?`<span style="color:var(--hash-txt)">${ctx.sector}</span>`:''}
+      ${ctx.memo?`<span style="color:var(--accent);cursor:pointer" onclick="setTab('memos',{memoId:'${ctx.memo.id}'})">memo →</span>`:'<span style="color:var(--warn-txt)">no memo</span>'}
+    </div>`:''}
+  </div>`;
+
+  if(loading){
+    return header+`<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-title">Searching</div><div class="empty-body">Looking for regulatory announcements and company releases…</div></div>`;
+  }
+  if(!c){
+    return header+`<div class="empty-state"><div class="empty-icon">📰</div><div class="empty-body">No digest yet for ${sym}.</div></div>`;
+  }
+  if(c.error){
+    return header+`<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt)"><strong>Fetch failed</strong><br>${c.error}</div>`;
+  }
+
+  const items=c.items||[];
+  const material=items.filter(i=>i.material!==false);
+  const routine=items.filter(i=>i.material===false);
+
+  const overall=c.overall?`<div style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:14px">
+    <div class="section-label" style="margin-bottom:6px;color:var(--accent)">The picture</div>
+    <div style="font-size:14px;line-height:1.6;color:var(--ink)">${c.overall}</div>
+    ${!c.hadMemo?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-top:8px">Assessed against a generic thesis — write a memo for ${sym} to sharpen this.</div>`:''}
+  </div>`:'';
+
+  const renderItem=(n)=>{
+    const impactColor=n.impact==='positive'?'var(--accent)':n.impact==='negative'?'var(--danger)':'var(--ink3)';
+    const impactMark=n.impact==='positive'?'▲':n.impact==='negative'?'▼':'●';
+    return `<div class="entry-card" style="margin-bottom:10px">
+      <div class="entry-meta">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="color:${impactColor};font-size:12px">${impactMark}</span>
+          <span class="entry-date">${n.date||''}</span>
+          ${n.source?`<span style="font-family:var(--font-mono);font-size:10px;padding:1px 6px;border-radius:4px;background:${n.official?'var(--tag-bg)':'var(--surface3)'};color:${n.official?'var(--tag-txt)':'var(--ink3)'}">${n.source}</span>`:''}
+        </div>
+      </div>
+      <div style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.45;margin-bottom:6px">${n.headline||''}</div>
+      ${n.summary?`<div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:8px">${n.summary}</div>`:''}
+      ${n.relevance?`<div style="font-size:13px;line-height:1.6;color:var(--ink);border-left:2px solid ${impactColor};padding-left:10px;margin-bottom:8px">${n.relevance}</div>`:''}
+      ${n.url?`<a href="${n.url}" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;color:var(--accent);text-decoration:none">Read the original →</a>`:''}
+    </div>`;
+  };
+
+  const usedWindow=c.window&&NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window]:currentWindow();
+  const materialHtml=material.length
+    ? `<div class="section-label">Material — ${material.length}</div>`+material.map(renderItem).join('')
+    : `<div class="news-config" style="margin-bottom:14px">Nothing announced in ${usedWindow.phrase}.</div>`;
+
+  const routineHtml=routine.length
+    ? `<div class="section-label" style="margin-top:8px">Routine — ${routine.length}</div>`+routine.map(renderItem).join('')
+    : '';
+
+  const sourcesHtml=(c.sources&&c.sources.length)
+    ? `<div class="news-panel" style="margin-bottom:60px">
+        <div class="news-panel-header">Sources consulted</div>
+        ${c.sources.slice(0,10).map(s=>`<div class="news-item"><a href="${s.uri}" target="_blank" rel="noopener" style="color:var(--ink2);text-decoration:none;font-size:12px">${s.title||s.uri}</a></div>`).join('')}
+      </div>`
+    : '<div style="margin-bottom:60px"></div>';
+
+  const staleWarn=c.window&&c.window!==state.newsWindow?` · asked for ${usedWindow.label}, now showing ${currentWindow().label}`:'';
+  const stamp=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-align:center;margin:14px 0">Checked ${fmtDateRelative(c.fetchedAt)} over ${usedWindow.phrase}${staleWarn?`<br><span style="color:var(--warn-txt)">${staleWarn.slice(3)}</span>`:''}</div>`;
+
+  return header+overall+materialHtml+routineHtml+stamp+sourcesHtml;
+}
+
+/* ── Gemini key setup ── */
+function openGeminiSetup(){
+  const root=document.getElementById('modalRoot');
+  const has=!!state.geminiKey;
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Gemini API key</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
+        News digests use Gemini with Search grounding.<br>
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Get a free key at AI Studio →</a>
+      </div>
+      <div class="field-row">
+        <div class="field-label">API key</div>
+        <input class="field-input" id="geminiKeyInput" type="password" placeholder="AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
+      </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
+        Stored in this browser only. Never sent anywhere but Google.
+      </div>
+      <div class="modal-footer">
+        ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
+      </div>
+    </div>
+  </div>`;
+  setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
+}
+function saveGeminiKey(){
+  const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
+  if(!k){showToast('Enter a key');return;}
+  state.geminiKey=k;save();closeModal();render();showToast('Gemini connected');
+}
+function clearGeminiKey(){
+  if(!confirm('Remove the Gemini key? Cached digests are kept.'))return;
+  state.geminiKey=null;save();closeModal();render();showToast('Key removed');
+}
+
 /* ══════════════════════════════════════
    CALENDAR TAB
 ══════════════════════════════════════ */
@@ -786,19 +1283,233 @@ function shiftMonth(delta){state.calMonth+=delta;if(state.calMonth>11){state.cal
 /* ══════════════════════════════════════
    TICKERS TAB
 ══════════════════════════════════════ */
-function renderTickers(){
-  const tickers=allTickers();const hashes=allHashes();
-  if(!tickers.length&&!hashes.length)return`<div class="empty-state"><div class="empty-icon">🏷</div><div class="empty-title">No tags yet</div><div class="empty-body">Add entries with <code style="font-family:var(--font-mono);font-size:12px">$TICKER</code> or <code style="font-family:var(--font-mono);font-size:12px">#tag</code>.</div></div>`;
-  const max=tickers[0]?.[1]||1;
-  const weeklyBtn=`<button class="weekly-digest-btn" onclick="weeklyDigest()">↓ Generate weekly digest for all tickers</button>`;
-  const tickerList=tickers.length?`<div class="section-label" style="margin-top:0">Stock tickers</div><div class="ticker-list">${tickers.map(([t,c])=>{const hasMemo=state.memos.some(m=>m.ticker===t||m.ticker==='$'+t);return`<div class="ticker-row" onclick="openTickerMemo('${t}')"><div class="ticker-name">${t}${hasMemo?` <span style="font-size:10px;opacity:.5">memo</span>`:''}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/max*100)}%"></div></div><div class="ticker-count">${c} entr${c===1?'y':'ies'}</div></div>`;}).join('')}</div>`:'';
-  const hashList=hashes.length?`<div class="section-label">Manual tags</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">${hashes.map(([h,c])=>`<div class="tag hash" onclick="filterByHash('${h}')" style="padding:4px 12px;font-size:13px">${h} <span style="opacity:.6">${c}</span></div>`).join('')}</div>`:'';
-  return weeklyBtn+tickerList+hashList;
+/* ══════════════════════════════════════
+   TICKERS  —  the archive.
+   Every ticker ever touched, from any source. Holdings, watchlist,
+   and sold positions all keep their history here.
+══════════════════════════════════════ */
+
+// Everything known about every ticker, from every source
+function tickerArchive(){
+  const map={};
+  const touch=(sym)=>{
+    const s=sym.replace(/^\$/,'').toUpperCase();
+    if(!map[s])map[s]={symbol:s,entries:[],holding:null,memo:null,news:null};
+    return map[s];
+  };
+
+  state.entries.forEach(e=>{
+    e.tickers.forEach(t=>{ touch(t).entries.push(e); });
+  });
+  state.portfolio.forEach(h=>{ touch(h.symbol).holding=h; });
+  state.memos.forEach(m=>{ touch(m.ticker).memo=m; });
+  Object.keys(state.newsCache).forEach(s=>{ touch(s).news=state.newsCache[s]; });
+  Object.keys(state.tickerTags).forEach(s=>{ touch(s); });
+
+  return Object.values(map).map(t=>{
+    const tag=state.tickerTags[t.symbol]||{};
+    t.entries.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+    t.name      = tag.name||tag.legalName||(t.holding?t.holding.name:'')||'';
+    t.sector    = tag.sector||'';
+    t.geography = tag.geography||'';
+    t.weight    = t.holding?t.holding.weight_pct:0;
+    t.lastTouch = t.entries.length?new Date(t.entries[0].ts).getTime():0;
+    // held now / watched (logged, never held) / closed (has history, not held now)
+    t.status = t.holding ? 'held' : (t.entries.length||t.memo ? 'closed' : 'watched');
+    // "closed" only makes sense if there IS history; otherwise it's just a tag with nothing behind it
+    if(!t.holding && !t.entries.length && !t.memo) t.status='watched';
+    return t;
+  });
 }
+
+const TICKER_FILTERS={
+  all:    {label:'All',       test:()=>true},
+  held:   {label:'Held',      test:t=>!!t.holding},
+  closed: {label:'Not held',  test:t=>!t.holding&&(t.entries.length||t.memo)},
+  memo:   {label:'Has memo',  test:t=>!!t.memo},
+  nomemo: {label:'No memo',   test:t=>!t.memo&&(t.entries.length||t.holding)},
+};
+const TICKER_SORTS={
+  recent: {label:'Recent',  cmp:(a,b)=>b.lastTouch-a.lastTouch},
+  weight: {label:'Weight',  cmp:(a,b)=>(b.weight-a.weight)||(b.entries.length-a.entries.length)},
+  logs:   {label:'Logs',    cmp:(a,b)=>b.entries.length-a.entries.length},
+  az:     {label:'A–Z',     cmp:(a,b)=>a.symbol.localeCompare(b.symbol)},
+};
+function setTickerFilter(f){state.tickerFilter=f;save();render();}
+function setTickerSort(s){state.tickerSort=s;save();render();}
+function openTicker(sym){state.activeTicker=sym.replace(/^\$/,'').toUpperCase();render();}
+// The one way in to a ticker from anywhere in the app
+function goToTicker(sym){
+  setTab('tickers',{ticker:sym.replace(/^\$/,'').toUpperCase()});
+}
+function closeTicker(){state.activeTicker=null;render();}
+
+function renderTickers(){
+  if(state.activeTicker)return renderTickerDetail(state.activeTicker);
+
+  const all=tickerArchive();
+  if(!all.length){
+    return `<div class="empty-state"><div class="empty-icon">🗂</div><div class="empty-title">Nothing tracked yet</div><div class="empty-body">Log an entry with a <code style="font-family:var(--font-mono);font-size:12px">$TICKER</code> or import a portfolio, and everything you touch will be archived here.</div></div>`;
+  }
+
+  const f=TICKER_FILTERS[state.tickerFilter]||TICKER_FILTERS.all;
+  const s=TICKER_SORTS[state.tickerSort]||TICKER_SORTS.recent;
+  const list=all.filter(f.test).sort(s.cmp);
+
+  const counts={
+    all:all.length,
+    held:all.filter(TICKER_FILTERS.held.test).length,
+    closed:all.filter(TICKER_FILTERS.closed.test).length,
+    memo:all.filter(TICKER_FILTERS.memo.test).length,
+    nomemo:all.filter(TICKER_FILTERS.nomemo.test).length,
+  };
+
+  const filters=`<div class="filter-chip-row" style="margin-bottom:8px">
+    ${Object.keys(TICKER_FILTERS).map(k=>`<div class="filter-chip ${state.tickerFilter===k?'active':''}" onclick="setTickerFilter('${k}')">${TICKER_FILTERS[k].label}${counts[k]?` ${counts[k]}`:''}</div>`).join('')}
+  </div>`;
+
+  const sorts=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+    <span class="section-label" style="margin:0">Sort</span>
+    <div style="display:flex;gap:4px">
+      ${Object.keys(TICKER_SORTS).map(k=>`<div class="filter-chip ${state.tickerSort===k?'active':''}" onclick="setTickerSort('${k}')">${TICKER_SORTS[k].label}</div>`).join('')}
+    </div>
+  </div>`;
+
+  const rows=list.map(t=>{
+    const statusPill = t.holding
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--accent)">${(t.weight*100).toFixed(1)}%</span>`
+      : (t.entries.length||t.memo)
+        ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">not held</span>`
+        : `<span style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">—</span>`;
+
+    const bits=[];
+    if(t.entries.length)bits.push(`${t.entries.length} log${t.entries.length===1?'':'s'}`);
+    if(t.memo)bits.push(`memo${t.memo.conviction?` ${t.memo.conviction}/5`:''}`);
+    const news=t.news&&t.news.items?t.news.items.filter(i=>i.material!==false).length:0;
+    if(news)bits.push(`${news} news`);
+    const meta=bits.length?bits.join(' · '):'nothing yet';
+
+    const lastLine=t.entries.length?fmtDateRelative(t.entries[0].ts):'';
+
+    return `<div class="ticker-row" onclick="openTicker('${t.symbol}')" style="align-items:center">
+      <div style="min-width:0;flex:1">
+        <div style="display:flex;align-items:baseline;gap:6px">
+          <span class="ticker-name">${t.symbol}</span>
+          ${statusPill}
+        </div>
+        ${t.name?`<div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.name}</div>`:''}
+        <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);margin-top:1px">${meta}</div>
+      </div>
+      ${lastLine?`<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);flex-shrink:0;margin-left:10px">${lastLine}</div>`:''}
+    </div>`;
+  }).join('');
+
+  const hashes=allHashes();
+  const hashList=hashes.length?`<div class="section-label" style="margin-top:20px">Tags</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:60px">${hashes.map(([h,n])=>`<div class="tag hash" onclick="filterByHash('${h}')" style="padding:4px 12px;font-size:13px">${h} <span style="opacity:.6">${n}</span></div>`).join('')}</div>`:'<div style="margin-bottom:60px"></div>';
+
+  return filters+sorts+`<div class="ticker-list">${rows}</div>`+hashList;
+}
+
+function renderTickerDetail(sym){
+  const t=tickerArchive().find(x=>x.symbol===sym);
+  if(!t){state.activeTicker=null;return renderTickers();}
+
+  const tag=state.tickerTags[sym]||{};
+  const news=t.news;
+  const materialNews=news&&news.items?news.items.filter(i=>i.material!==false):[];
+
+  // Header
+  const statusLine=t.holding
+    ? `<span style="color:var(--accent)">${(t.weight*100).toFixed(1)}% of portfolio</span>`
+    : (t.entries.length||t.memo)
+      ? `<span style="color:var(--ink3)">not currently held</span>`
+      : `<span style="color:var(--ink3)">no position</span>`;
+
+  const tagLine=[tag.sector,tag.geography].filter(Boolean).join(' · ');
+
+  const header=`<div style="margin-bottom:16px">
+    <button class="back-btn" onclick="closeTicker()" style="margin-bottom:10px">← Tickers</button>
+    <div style="font-family:var(--font-serif);font-size:26px">${t.symbol}</div>
+    ${t.name?`<div style="font-size:13px;color:var(--ink3);font-family:var(--font-mono);margin-bottom:6px">${t.name}</div>`:''}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;font-family:var(--font-mono);font-size:11px">
+      ${statusLine}
+      ${tagLine?`<span style="color:var(--hash-txt)">${tagLine}</span>`:''}
+    </div>
+  </div>`;
+
+  // Actions — go where the depth is
+  const actions=`<div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">
+    ${t.memo
+      ? `<button class="btn btn-ghost btn-sm" onclick="setTab('memos',{memoId:'${t.memo.id}'})">Open memo${t.memo.conviction?` · ${t.memo.conviction}/5`:''}</button>`
+      : `<button class="btn btn-primary btn-sm" onclick="prefillNewMemo('${t.symbol}')">Write memo</button>`}
+    <button class="btn btn-ghost btn-sm" onclick="openNewsFor('${t.symbol}')">${news?`News · ${materialNews.length||'0'}`:'Fetch news'}</button>
+    <button class="btn btn-ghost btn-sm" onclick="composeForTicker('${t.symbol}')">+ Log entry</button>
+  </div>`;
+
+  // Memo summary, if one exists
+  const memoBlock=t.memo&&t.memo.sections&&t.memo.sections.thesis
+    ? `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:16px">
+        <div class="section-label" style="margin-bottom:6px">Thesis</div>
+        <div style="font-size:13px;line-height:1.6;color:var(--ink2)">${renderMd(t.memo.sections.thesis.slice(0,400))}${t.memo.sections.thesis.length>400?'…':''}</div>
+      </div>`
+    : '';
+
+  // Latest news, if fetched
+  const newsBlock=materialNews.length
+    ? `<div class="section-label">Latest news</div>
+       <div style="margin-bottom:16px">
+         ${materialNews.slice(0,2).map(n=>{
+           const col=n.impact==='positive'?'var(--accent)':n.impact==='negative'?'var(--danger)':'var(--ink3)';
+           const mark=n.impact==='positive'?'▲':n.impact==='negative'?'▼':'●';
+           return `<div class="ticker-row" style="cursor:pointer;align-items:flex-start" onclick="openNewsFor('${t.symbol}')">
+             <span style="color:${col};margin-right:8px;flex-shrink:0">${mark}</span>
+             <div style="min-width:0;flex:1">
+               <div style="font-size:13px;color:var(--ink);line-height:1.4">${n.headline||''}</div>
+               <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);margin-top:2px">${n.date||''}${n.source?` · ${n.source}`:''}</div>
+             </div>
+           </div>`;
+         }).join('')}
+       </div>`
+    : '';
+
+  // The archive itself — every log entry, newest first
+  const logBlock=t.entries.length
+    ? `<div class="section-label">History — ${t.entries.length} ${t.entries.length===1?'entry':'entries'}</div>
+       <div style="margin-bottom:60px">
+         ${t.entries.map(e=>`<div class="entry-card" style="margin-bottom:8px">
+           <div class="entry-meta">
+             <div class="entry-date">${fmtDate(e.ts)}</div>
+             <div class="entry-actions">
+               <button class="icon-btn" onclick="event.stopPropagation();editEntry('${e.id}')" title="Edit">✎</button>
+             </div>
+           </div>
+           <div class="entry-body">${renderMd(e.text)}</div>
+           ${e.hashes.length?`<div class="entry-tags">${e.hashes.map(h=>`<span class="tag hash" onclick="event.stopPropagation();filterByHash('${h}')">${h}</span>`).join('')}</div>`:''}
+         </div>`).join('')}
+       </div>`
+    : `<div class="news-config" style="margin-bottom:60px">No log entries for ${t.symbol} yet.</div>`;
+
+  return header+actions+memoBlock+newsBlock+logBlock;
+}
+
+// Jump to the Log tab with the composer open and the ticker pre-typed
+function composeForTicker(sym){
+  setTab('log');
+  setTimeout(()=>{
+    openCompose();
+    setTimeout(()=>{
+      const ta=document.getElementById('composeText');
+      if(ta&&!ta.value.trim()){
+        ta.value='$'+sym.replace(/^\$/,'').toUpperCase()+' ';
+        ta.setSelectionRange(ta.value.length,ta.value.length);
+        onComposeInput();
+      }
+    },60);
+  },60);
+}
+
 function filterByTicker(t){state.filterTickers=[t];state.filterHashes=[];setTab('log');}
 function filterByHash(h){state.filterHashes=[h];state.filterTickers=[];setTab('log');}
-function weeklyDigest(){const tickers=allTickers().map(([t])=>t);if(!tickers.length){showToast('No tickers logged yet');return;}openNewsDigestModal(tickers);}
-function openNewsDigestModal(tickers){const root=document.getElementById('modalRoot');root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Weekly digest</div><button class="icon-btn" onclick="closeModal()">✕</button></div><div style="font-size:13px;color:var(--ink2);margin-bottom:12px">Digest for: <strong>${tickers.join(', ')}</strong></div><div class="news-config"><strong>AI news digest</strong> — configure an API key to fetch live news summaries.</div><div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Close</button></div></div></div>`;}
 
 /* ══════════════════════════════════════
    PORTFOLIO TAB
@@ -877,7 +1588,7 @@ function renderPortfolio(){
     const tagLine=h.sector||h.geography
       ?`${h.sector}${h.sector&&h.geography?' · ':''}${h.geography}`
       :'<span style="color:var(--warn-txt)">untagged</span>';
-    const clickAction=selMode?`togglePortSelect('${h.symbol}')`:`openTickerMemo('${h.symbol}')`;
+    const clickAction=selMode?`togglePortSelect('${h.symbol}')`:`goToTicker('${h.symbol}')`;
     return`<div class="ticker-row" onclick="${clickAction}" style="${isSel?'border-color:var(--accent);background:var(--accent2);':''}">
       ${selMode?`<div style="width:20px;height:20px;border-radius:5px;border:2px solid ${isSel?'var(--accent)':'var(--border2)'};background:${isSel?'var(--accent)':'transparent'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;margin-right:8px;flex-shrink:0">${isSel?'✓':''}</div>`:''}
       <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${h.symbol}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div></div>
@@ -941,6 +1652,10 @@ function openTagModal(){
         <input class="field-input" id="tagNameInput" placeholder="${(lookupCompanyName(syms[0])||'').replace(/"/g,'&quot;')}" value="${(cur.name||'').replace(/"/g,'&quot;')}">
       </div>
       <div class="field-row">
+        <div class="field-label">Full legal name <span style="opacity:.5">(helps news search find the right company)</span></div>
+        <input class="field-input" id="tagLegalInput" placeholder="e.g. Snowline Gold Corp." value="${(cur.legalName||'').replace(/"/g,'&quot;')}">
+      </div>
+      <div class="field-row">
         <div class="field-label">Google Finance ticker <span style="opacity:.5">(override — e.g. OTC listing)</span></div>
         <input class="field-input" id="tagGfInput" placeholder="e.g. OTCMKTS:AUMBF" value="${cur.gfTicker||''}" style="font-family:var(--font-mono)">
       </div>`:''}
@@ -958,6 +1673,7 @@ function applyTags(){
   const geo=(document.getElementById('tagGeoInput')?.value||'').trim();
   const gf=(document.getElementById('tagGfInput')?.value||'').trim();
   const nameOverride=(document.getElementById('tagNameInput')?.value||'').trim();
+  const legalName=(document.getElementById('tagLegalInput')?.value||'').trim();
   syms.forEach(s=>{
     const t=state.tickerTags[s]||{};
     if(sector)t.sector=sector;
@@ -965,6 +1681,7 @@ function applyTags(){
     if(syms.length===1){
       if(gf)t.gfTicker=gf;
       if(nameOverride)t.name=nameOverride;else delete t.name;
+      if(legalName)t.legalName=legalName;else delete t.legalName;
     }
     state.tickerTags[s]=t;
   });
@@ -1128,7 +1845,7 @@ function renderAnalytics(){
   </div>
   <div class="section-label">Activity — last 30 days</div>
   <div style="display:grid;grid-template-columns:repeat(30,1fr);gap:2px;margin-bottom:20px">${heatCells}</div>
-  ${tickers.length?`<div class="section-label">Top tickers</div><div class="ticker-list" style="margin-bottom:16px">${tickers.slice(0,5).map(([t,c])=>`<div class="ticker-row" onclick="openTickerMemo('${t}')"><div class="ticker-name">${t}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/(tickers[0][1])*100)}%"></div></div><div class="ticker-count">${c}</div></div>`).join('')}</div>`:''}`;
+  ${tickers.length?`<div class="section-label">Top tickers</div><div class="ticker-list" style="margin-bottom:16px">${tickers.slice(0,5).map(([t,c])=>`<div class="ticker-row" onclick="goToTicker('${t}')"><div class="ticker-name">${t}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/(tickers[0][1])*100)}%"></div></div><div class="ticker-count">${c}</div></div>`).join('')}</div>`:''}`;
 }
 function calcStreak(){
   if(!state.entries.length)return 0;
@@ -1185,7 +1902,6 @@ function saveEdit(id){
   save();closeModal();render();showToast('Entry updated');
   if(state.driveSynced)scheduleDriveSync();
 }
-function toggleNews(id){const entry=state.entries.find(e=>e.id===id);if(entry)entry.showNews=!entry.showNews;render();}
 function closeModal(){document.getElementById('modalRoot').innerHTML='';}
 
 /* ══════════════════════════════════════
@@ -1413,6 +2129,7 @@ async function pullFromDrive(opts){
     state.entries=remote.entries||[];
     state.memos=remote.memos||[];
     state.tickerTags=remote.tickerTags||{};
+    if(remote.newsCache)state.newsCache=remote.newsCache;
     if(remote.portfolio)state.portfolio=remote.portfolio;
     if(remote.portfolioMeta)state.portfolioMeta=remote.portfolioMeta;
     if(remote.portfolioSyncedAt)state.portfolioSyncedAt=remote.portfolioSyncedAt;
@@ -1457,6 +2174,7 @@ async function pushToDrive(){
   const data=JSON.stringify({
     entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,
     portfolio:state.portfolio,portfolioMeta:state.portfolioMeta,portfolioSyncedAt:state.portfolioSyncedAt,
+    newsCache:state.newsCache,
     lastSync:now
   },null,2);
   try{
