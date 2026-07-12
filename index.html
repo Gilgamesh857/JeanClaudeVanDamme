@@ -106,21 +106,7 @@
   .empty-icon{font-size:36px;margin-bottom:12px;opacity:.4}
   .empty-title{font-family:var(--font-serif);font-size:18px;color:var(--ink2);margin-bottom:6px}
   .empty-body{font-size:13px;line-height:1.6}
-  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:16px}
-  .cal-day-label{font-size:10px;font-family:var(--font-mono);color:var(--ink3);text-align:center;padding:2px 0}
-  .cal-cell{aspect-ratio:1;border-radius:5px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;font-family:var(--font-mono);transition:all .15s;border:1px solid transparent;position:relative}
-  .cal-cell.empty{background:transparent;cursor:default}
-  .cal-cell.no-entry{background:var(--surface3);color:var(--ink3)}
-  .cal-cell.has-entry-1{background:var(--accent3);color:var(--accent)}
-  .cal-cell.has-entry-2{background:#9dd4b5;color:#0f5c30}
-  .cal-cell.has-entry-3{background:#4cae7a;color:#fff}
-  .cal-cell.today{border-color:var(--accent);font-weight:500}
-  .cal-cell:hover:not(.empty){box-shadow:0 0 0 2px var(--accent3)}
-  .cal-month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-  .cal-month-label{font-family:var(--font-serif);font-size:18px;color:var(--ink)}
-  .day-entries-preview{background:var(--surface2);border-radius:var(--r);padding:10px;margin-top:8px;border:1px solid var(--border)}
-  .day-entries-preview h4{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
-  .analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+                              .analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
   .metric-card{background:var(--surface2);border-radius:var(--r);padding:12px;border:1px solid var(--border)}
   .metric-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
   .metric-value{font-size:24px;font-weight:500;color:var(--ink);font-family:var(--font-serif)}
@@ -242,9 +228,7 @@
     <div class="tab" onclick="setTab('memos')">Memos</div>
     <div class="tab" onclick="setTab('portfolio')">Portfolio</div>
     <div class="tab" onclick="setTab('news')">News</div>
-    <div class="tab" onclick="setTab('calendar')">Calendar</div>
     <div class="tab" onclick="setTab('tickers')">Tickers</div>
-    <div class="tab" onclick="setTab('analytics')">Analytics</div>
   </div>
   <div class="scroll-area" id="mainContent"></div>
 </div>
@@ -265,7 +249,6 @@ let state={
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
-  calMonth:new Date().getMonth(),calYear:new Date().getFullYear(),selectedDay:null,
   activeMemoId:null
 };
 
@@ -343,7 +326,7 @@ function setTab(tab,opts){
   state.activeNewsTicker=(tab==='news'&&opts&&opts.ticker)?opts.ticker:(tab==='news'?state.activeNewsTicker:null);
   state.activeTicker=(tab==='tickers'&&opts&&opts.ticker)?opts.ticker:(tab==='tickers'?state.activeTicker:null);
   document.querySelectorAll('.tab').forEach((el,i)=>{
-    el.classList.toggle('active',['log','memos','portfolio','news','calendar','tickers','analytics'][i]===tab);
+    el.classList.toggle('active',['log','memos','portfolio','news','tickers'][i]===tab);
   });
   // show/hide search bar
   const sw=document.getElementById('searchBarWrap');
@@ -373,9 +356,7 @@ function render(){
   else if(state.activeTab==='memos')renderMemosTab(el);
   else if(state.activeTab==='portfolio')el.innerHTML=renderPortfolio();
   else if(state.activeTab==='news')el.innerHTML=renderNews();
-  else if(state.activeTab==='calendar')el.innerHTML=renderCalendar();
-  else if(state.activeTab==='tickers')el.innerHTML=renderTickers();
-  else el.innerHTML=renderAnalytics();
+  else el.innerHTML=renderTickers();
   // FAB
   const fab=document.getElementById('fab');
   if(state.activeTab==='news'){fab.style.display='none';}
@@ -771,6 +752,9 @@ const NEWS_WINDOWS={
   '24h':{label:'24h', days:1,  phrase:'the last 24 hours',
          staleMs:12*3600000,
          note:'This is a daily check. Only report announcements published in the last 24 hours. If nothing was published in that window, say so plainly and return an empty items array — that is the expected and correct answer on most days. Do not reach back further to find something to report.'},
+  '3d': {label:'3d',  days:3,  phrase:'the last 3 days',
+         staleMs:36*3600000,
+         note:'Only report announcements published in the last 3 days. This window is typically used over a weekend or after a short break, to catch the last trading day or two. An empty result is a legitimate answer — do not stretch the window to fill the list.'},
   '7d': {label:'7d',  days:7,  phrase:'the last 7 days',
          staleMs:3*86400000,
          note:'Only report announcements published in the last 7 days. An empty result is a legitimate answer. Do not widen the window to fill the list.'},
@@ -1246,39 +1230,6 @@ function clearGeminiKey(){
   if(!confirm('Remove the Gemini key? Cached digests are kept.'))return;
   state.geminiKey=null;save();closeModal();render();showToast('Key removed');
 }
-
-/* ══════════════════════════════════════
-   CALENDAR TAB
-══════════════════════════════════════ */
-function renderCalendar(){
-  const year=state.calYear,month=state.calMonth;
-  const monthName=new Date(year,month,1).toLocaleString('en-GB',{month:'long',year:'numeric'});
-  const firstDay=new Date(year,month,1).getDay();
-  const daysInMonth=new Date(year,month+1,0).getDate();
-  const today=new Date();
-  const todayStr=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
-  const entriesByDay={};
-  state.entries.forEach(e=>{const d=new Date(e.ts);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;entriesByDay[key]=(entriesByDay[key]||0)+1;});
-  const dayLabels=['Su','Mo','Tu','We','Th','Fr','Sa'].map(d=>`<div class="cal-day-label">${d}</div>`).join('');
-  let cells='';
-  for(let i=0;i<firstDay;i++)cells+=`<div class="cal-cell empty"></div>`;
-  for(let d=1;d<=daysInMonth;d++){
-    const key=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const cnt=entriesByDay[key]||0;
-    const cls=cnt===0?'no-entry':cnt===1?'has-entry-1':cnt===2?'has-entry-2':'has-entry-3';
-    const isToday=key===todayStr;
-    cells+=`<div class="cal-cell ${cls}${isToday?' today':''}" onclick="selectDay('${key}')" title="${cnt} entr${cnt===1?'y':'ies'}">${d}</div>`;
-  }
-  let dayPreview='';
-  if(state.selectedDay){
-    const dayEntries=state.entries.filter(e=>{const d=new Date(e.ts);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;return key===state.selectedDay;});
-    if(dayEntries.length){dayPreview=`<div class="day-entries-preview"><h4>${new Date(state.selectedDay).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})} · ${dayEntries.length} entr${dayEntries.length===1?'y':'ies'}</h4>${dayEntries.map(e=>renderEntry(e,true)).join('')}</div>`;}
-    else{dayPreview=`<div class="day-entries-preview"><h4>No entries on this day</h4></div>`;}
-  }
-  return`<div class="cal-month-nav"><button class="btn btn-ghost" onclick="shiftMonth(-1)">← Prev</button><div class="cal-month-label">${monthName}</div><button class="btn btn-ghost" onclick="shiftMonth(1)">Next →</button></div><div class="cal-grid">${dayLabels}${cells}</div>${dayPreview}`;
-}
-function selectDay(key){state.selectedDay=state.selectedDay===key?null:key;render();}
-function shiftMonth(delta){state.calMonth+=delta;if(state.calMonth>11){state.calMonth=0;state.calYear++;}if(state.calMonth<0){state.calMonth=11;state.calYear--;}state.selectedDay=null;render();}
 
 /* ══════════════════════════════════════
    TICKERS TAB
@@ -1821,41 +1772,6 @@ function parseMV(val){
 }
 
 /* ══════════════════════════════════════
-   ANALYTICS TAB
-══════════════════════════════════════ */
-function renderAnalytics(){
-  const entries=state.entries;
-  if(!entries.length)return`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No data yet</div><div class="empty-body">Log some entries and analytics will appear here.</div></div>`;
-  const now=new Date();
-  const thisWeek=entries.filter(e=>(now-new Date(e.ts))<7*86400000);
-  const thisMonth=entries.filter(e=>{const d=new Date(e.ts);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
-  const tickers=allTickers();const streak=calcStreak();
-  const last30=[];
-  for(let i=29;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;last30.push(entries.filter(e=>{const dd=new Date(e.ts);return`${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`===key;}).length);}
-  const heatMax=Math.max(...last30,1);
-  const heatCells=last30.map(c=>{const op=c===0?0.08:Math.max(0.2,c/heatMax);return`<div style="width:100%;aspect-ratio:1;background:var(--accent);opacity:${op.toFixed(2)};border-radius:2px" title="${c} entries"></div>`;}).join('');
-  const memoCount=state.memos.length;
-  return`<div class="analytics-grid">
-    <div class="metric-card"><div class="metric-label">Total entries</div><div class="metric-value">${entries.length}</div></div>
-    <div class="metric-card"><div class="metric-label">This week</div><div class="metric-value">${thisWeek.length}</div></div>
-    <div class="metric-card"><div class="metric-label">This month</div><div class="metric-value">${thisMonth.length}</div></div>
-    <div class="metric-card"><div class="metric-label">Day streak</div><div class="metric-value">${streak}</div><div class="metric-sub">consecutive days</div></div>
-    <div class="metric-card"><div class="metric-label">Memos</div><div class="metric-value">${memoCount}</div><div class="metric-sub">investment theses</div></div>
-    <div class="metric-card"><div class="metric-label">Holdings tracked</div><div class="metric-value">${tickers.length}</div></div>
-  </div>
-  <div class="section-label">Activity — last 30 days</div>
-  <div style="display:grid;grid-template-columns:repeat(30,1fr);gap:2px;margin-bottom:20px">${heatCells}</div>
-  ${tickers.length?`<div class="section-label">Top tickers</div><div class="ticker-list" style="margin-bottom:16px">${tickers.slice(0,5).map(([t,c])=>`<div class="ticker-row" onclick="goToTicker('${t}')"><div class="ticker-name">${t}</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.round(c/(tickers[0][1])*100)}%"></div></div><div class="ticker-count">${c}</div></div>`).join('')}</div>`:''}`;
-}
-function calcStreak(){
-  if(!state.entries.length)return 0;
-  const days=new Set(state.entries.map(e=>{const d=new Date(e.ts);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}));
-  let streak=0,d=new Date();
-  while(true){const k=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;if(!days.has(k))break;streak++;d.setDate(d.getDate()-1);}
-  return streak;
-}
-
-/* ══════════════════════════════════════
    COMPOSE
 ══════════════════════════════════════ */
 function openCompose(){
@@ -1982,6 +1898,9 @@ async function getAccessToken(){
     return null;
   }
 }
+
+// A previously-saved tab may no longer exist
+if(!['log','memos','portfolio','news','tickers'].includes(state.activeTab))state.activeTab='log';
 
 let syncTimer;
 function scheduleDriveSync(){clearTimeout(syncTimer);syncTimer=setTimeout(pushToDrive,2000);}
