@@ -1200,9 +1200,9 @@ const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file';
 // Called on page load — complete the OAuth code exchange if we were redirected back
 (async function handleOAuthRedirect(){
   const params = new URLSearchParams(location.search);
-  const code   = params.get('code');
-  const state  = params.get('state');
-  if(!code || state !== 'invest_diary_oauth') return;
+  const code       = params.get('code');
+  const oauthState = params.get('state');   // CSRF token — NOT the app's state object
+  if(!code || oauthState !== 'invest_diary_oauth') return;
   // Clean URL without reloading
   history.replaceState({}, '', location.pathname);
   const stored = JSON.parse(sessionStorage.getItem('oauth_pending')||'{}');
@@ -1431,6 +1431,25 @@ async function pushToDrive(){
   if(!token){
     if(state.oauthRefreshToken) updateSyncBadge('error');
     return;
+  }
+  // Safety: never let an empty device overwrite a Drive backup that has data.
+  const localEmpty=!state.entries.length&&!state.memos.length&&!Object.keys(state.tickerTags).length;
+  if(localEmpty){
+    try{
+      const fid=await findDriveFile(token);
+      if(fid){
+        const chk=await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`,{headers:{Authorization:`Bearer ${token}`}});
+        if(chk.ok){
+          const rem=await chk.json();
+          const remoteHasData=(rem.entries&&rem.entries.length)||(rem.memos&&rem.memos.length)||(rem.tickerTags&&Object.keys(rem.tickerTags).length);
+          if(remoteHasData){
+            updateSyncBadge('ok');
+            showToast('Drive has data this device does not — use Restore, not Sync');
+            return;
+          }
+        }
+      }
+    }catch(e){/* if the check fails, fall through to a normal sync */}
   }
   updateSyncBadge('syncing');
   const now=new Date().toISOString();
