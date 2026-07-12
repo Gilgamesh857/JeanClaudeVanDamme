@@ -1029,6 +1029,21 @@ async function fetchNewsForTicker(symbol,opts){
   }
 }
 
+/* Which tickers need re-checking, given the current window.
+   Each window has its own staleness threshold — a 24h check goes stale
+   in hours, a 90d review lasts weeks. Changing the window makes
+   everything stale, because you're asking a different question. */
+function staleTickers(universe){
+  const w=currentWindow();
+  const cutoff=Date.now()-w.staleMs;
+  return (universe||newsUniverse()).filter(t=>{
+    const c=state.newsCache[t.symbol];
+    if(!c||!c.fetchedAt)return true;
+    if(c.window&&c.window!==state.newsWindow)return true;
+    return new Date(c.fetchedAt).getTime()<cutoff;
+  });
+}
+
 /* Free-tier pacing.
    Gemini's free tier allows a limited number of requests per minute.
    We space calls out to stay comfortably inside it, and the batch is
