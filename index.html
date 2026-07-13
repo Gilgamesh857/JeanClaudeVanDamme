@@ -248,7 +248,7 @@ let state={
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   newsBatch:null,newsAskWindow:null,
-  geminiModel:'gemini-2.5-flash',newsUsage:{},
+  geminiModel:'gemini-2.5-flash',newsUsage:{},geminiTest:null,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -265,7 +265,7 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
-      state.geminiModel=s.geminiModel||'gemini-2.5-flash';state.newsUsage=s.newsUsage||{};
+      state.geminiModel=GEMINI_MODELS[s.geminiModel]?s.geminiModel:'gemini-2.5-flash';state.newsUsage=s.newsUsage||{};
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -753,13 +753,15 @@ function prefillNewMemo(ticker){
    RNS / SEDAR+ / ASX feeds later means replacing fetchNewsFor() only.
 ══════════════════════════════════════ */
 
-/* Model choice matters on the free tier — some have zero quota.
-   Verified against Cloud Console → Generative Language API → Quotas.
-   If a model stops working, check there first. */
+/* Model IDs verified against Google's current docs (July 2026).
+   gemini-2.0-flash was SHUT DOWN on 1 June 2026 — that is why it showed
+   0/0 quota in Cloud Console and every request failed.
+   Quotas differ per model and change; the app reads the real numbers from
+   Cloud Console → Generative Language API → Quotas if you need to verify. */
 const GEMINI_MODELS={
-  'gemini-2.5-flash':      {label:'2.5 Flash',      rpm:5,  rpd:20, note:'Best quality'},
-  'gemini-2.5-flash-lite': {label:'2.5 Flash Lite', rpm:10, rpd:20, note:'Faster, lighter'},
-  'gemini-3-flash':        {label:'3 Flash',        rpm:5,  rpd:20, note:'Newest'},
+  'gemini-2.5-flash':      {label:'2.5 Flash',      rpm:5,  rpd:20,  note:'Reliable, good quality'},
+  'gemini-2.5-flash-lite': {label:'2.5 Flash Lite', rpm:10, rpd:20,  note:'Faster, higher rate limit'},
+  'gemini-flash-latest':   {label:'Flash (latest)', rpm:5,  rpd:20,  note:'Auto-updates to newest Flash'},
 };
 function currentModel(){
   return GEMINI_MODELS[state.geminiModel] ? state.geminiModel : 'gemini-2.5-flash';
@@ -939,9 +941,12 @@ async function fetchNewsFor(symbol,winKey){
   const ctx=tickerContext(symbol);
   const prompt=buildNewsPrompt(ctx,win);
 
-  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent?key=${state.geminiKey}`,{
+  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent`,{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{
+      'Content-Type':'application/json',
+      'x-goog-api-key':state.geminiKey,   // the current, documented way to authenticate
+    },
     body:JSON.stringify({
       contents:[{parts:[{text:prompt}]}],
       tools:[{google_search:{}}],
@@ -1528,11 +1533,20 @@ function openGeminiSetup(){
           Used today: <strong style="color:${budgetLeft()?'var(--ink)':'var(--warn-txt)'}">${usedToday()} of ${dailyCap()}</strong>${budgetLeft()?'':' — resets at midnight Pacific'}
         </div>
       </div>
+      ${(()=>{
+        const t=state.geminiTest;
+        if(!t)return '';
+        if(t.status==='testing')return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Testing…</div>`;
+        if(t.status==='ok')return `<div class="news-config" style="background:var(--accent2);color:var(--accent);margin-bottom:12px"><strong>Working</strong> — ${t.detail}</div>`;
+        if(t.status==='quota')return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Key is valid</strong><br>${t.detail}</div>`;
+        return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Failed</strong><br>${t.detail}${t.hint?`<br><br>${t.hint}`:''}</div>`;
+      })()}
       <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
         Stored in this browser only. Never sent anywhere but Google.
       </div>
-      <div class="modal-footer">
+      <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
         ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
+        <button class="btn btn-ghost" onclick="testGeminiKey()">Test</button>
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
       </div>
@@ -1540,18 +1554,69 @@ function openGeminiSetup(){
   </div>`;
   setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
 }
+/* Test the key and model together. Failures here are far easier to read
+   than a failure buried inside a 68-ticker batch. */
+async function testGeminiKey(){
+  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
+  const key=typed||state.geminiKey;
+  if(!key){showToast('Enter a key first');return;}
+  if(typed)state.geminiKey=typed;
+
+  state.geminiTest={status:'testing'};
+  save();openGeminiSetup();
+
+  try{
+    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({
+        contents:[{parts:[{text:'Reply with exactly: OK'}]}],
+        generationConfig:{maxOutputTokens:10},
+      })
+    });
+
+    if(res.ok){
+      const d=await res.json();
+      const txt=(d.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+      state.geminiTest={status:'ok',detail:`${modelLimits().label} responded`};
+      recordUsage();
+    }else{
+      const e=await res.json().catch(()=>({}));
+      const msg=e.error?.message||`HTTP ${res.status}`;
+      let hint='';
+      if(res.status===400&&/api key not valid/i.test(msg)){
+        hint='The key was rejected. Copy it again from AI Studio.';
+      }else if(res.status===403){
+        hint='The key may be restricted, or the Generative Language API is not enabled on the project.';
+      }else if(res.status===404){
+        hint='This model does not exist or is not available to you. Try another.';
+      }else if(res.status===429){
+        hint='The key works — you have simply used up today\'s quota.';
+        state.geminiTest={status:'quota',detail:hint};
+        save();openGeminiSetup();
+        return;
+      }
+      state.geminiTest={status:'fail',detail:msg,hint};
+    }
+  }catch(err){
+    state.geminiTest={status:'fail',detail:err.message,hint:'Network error — check your connection.'};
+  }
+  save();openGeminiSetup();
+}
+
 function setGeminiModel(m){
   if(!GEMINI_MODELS[m])return;
   const key=document.getElementById('geminiKeyInput')?.value?.trim();
   state.geminiModel=m;
   if(key)state.geminiKey=key;   // don't lose a key being typed
+  state.geminiTest=null;        // a past result says nothing about a new model
   save();
-  openGeminiSetup();            // repaint so the selection and limits update
+  openGeminiSetup();
 }
 function saveGeminiKey(){
   const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
   if(!k){showToast('Enter a key');return;}
-  state.geminiKey=k;save();closeModal();render();showToast('Gemini connected');
+  state.geminiKey=k;state.geminiTest=null;save();closeModal();render();showToast('Gemini key saved');
 }
 function clearGeminiKey(){
   if(!confirm('Remove the Gemini key? Cached digests are kept.'))return;
