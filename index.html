@@ -248,7 +248,8 @@ let state={
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   newsBatch:null,newsAskWindow:null,
-  geminiModel:'gemini-2.5-flash',newsUsage:{},geminiTest:null,
+  geminiModel:null,geminiModels:[],geminiModelsAt:null,newsUsage:{},geminiTest:null,
+  newsRpm:5,newsDailyCap:20,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -265,7 +266,8 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
-      state.geminiModel=GEMINI_MODELS[s.geminiModel]?s.geminiModel:'gemini-2.5-flash';state.newsUsage=s.newsUsage||{};
+      state.geminiModel=s.geminiModel||null;state.geminiModels=s.geminiModels||[];state.geminiModelsAt=s.geminiModelsAt||null;
+      state.newsUsage=s.newsUsage||{};state.newsRpm=s.newsRpm||5;state.newsDailyCap=s.newsDailyCap||20;
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -280,7 +282,8 @@ function save(){
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
     geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,
-    geminiModel:state.geminiModel,newsUsage:state.newsUsage,
+    geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,
+    newsUsage:state.newsUsage,newsRpm:state.newsRpm,newsDailyCap:state.newsDailyCap,
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -753,21 +756,86 @@ function prefillNewMemo(ticker){
    RNS / SEDAR+ / ASX feeds later means replacing fetchNewsFor() only.
 ══════════════════════════════════════ */
 
-/* Model IDs verified against Google's current docs (July 2026).
-   gemini-2.0-flash was SHUT DOWN on 1 June 2026 — that is why it showed
-   0/0 quota in Cloud Console and every request failed.
-   Quotas differ per model and change; the app reads the real numbers from
-   Cloud Console → Generative Language API → Quotas if you need to verify. */
-const GEMINI_MODELS={
-  'gemini-2.5-flash':      {label:'2.5 Flash',      rpm:5,  rpd:20,  note:'Reliable, good quality'},
-  'gemini-2.5-flash-lite': {label:'2.5 Flash Lite', rpm:10, rpd:20,  note:'Faster, higher rate limit'},
-  'gemini-flash-latest':   {label:'Flash (latest)', rpm:5,  rpd:20,  note:'Auto-updates to newest Flash'},
-};
-function currentModel(){
-  return GEMINI_MODELS[state.geminiModel] ? state.geminiModel : 'gemini-2.5-flash';
+/* Models change constantly — 2.0 Flash was shut down, 2.5 Flash is closed to
+   new users. Hardcoding names guarantees this breaks again. So instead the app
+   asks Google which models THIS key can actually use, and picks the best one.
+   Discovery is cached; refresh it from the settings panel if a model dies. */
+
+// Preference order: newest capable Flash first. Only used to rank what
+// discovery returns — never to guess at a name that might not exist.
+const MODEL_PREFERENCE=[
+  /^gemini-flash-latest$/,        // auto-updating alias — safest long-term
+  /^gemini-3\.5-flash$/,
+  /^gemini-3\.1-flash$/,
+  /^gemini-3-flash$/,
+  /^gemini-2\.5-flash$/,
+  /^gemini-flash-lite-latest$/,
+  /^gemini-3\.1-flash-lite$/,
+  /^gemini-2\.5-flash-lite$/,
+];
+
+function rankModel(id){
+  for(let i=0;i<MODEL_PREFERENCE.length;i++){
+    if(MODEL_PREFERENCE[i].test(id))return i;
+  }
+  // Unlisted but plausible: prefer flash, deprioritise preview/experimental
+  let score=100;
+  if(/flash/.test(id))score-=20;
+  if(/lite/.test(id))score+=5;
+  if(/preview|exp|thinking|tts|image|audio|embedding/.test(id))score+=200;
+  return score;
 }
+
+async function discoverModels(){
+  if(!state.geminiKey)throw new Error('No API key');
+  const res=await fetch('https://generativelanguage.googleapis.com/v1beta/models',{
+    headers:{'x-goog-api-key':state.geminiKey}
+  });
+  if(!res.ok){
+    const e=await res.json().catch(()=>({}));
+    throw new Error(e.error?.message||`HTTP ${res.status}`);
+  }
+  const data=await res.json();
+  const models=(data.models||[])
+    .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+    .map(m=>({
+      id:(m.name||'').replace(/^models\//,''),
+      label:m.displayName||'',
+    }))
+    // Text generation only — no image, audio, embedding or TTS models
+    .filter(m=>m.id&&!/embedding|aqa|tts|image|audio|robotics|veo|imagen|gemma/i.test(m.id))
+    .sort((a,b)=>rankModel(a.id)-rankModel(b.id));
+
+  state.geminiModels=models;
+  state.geminiModelsAt=new Date().toISOString();
+  // If the current choice is gone, take the best available
+  if(models.length&&!models.find(m=>m.id===state.geminiModel)){
+    state.geminiModel=models[0].id;
+  }
+  save();
+  return models;
+}
+
+function availableModels(){
+  return state.geminiModels||[];
+}
+function currentModel(){
+  const list=availableModels();
+  if(state.geminiModel&&(!list.length||list.find(m=>m.id===state.geminiModel))){
+    return state.geminiModel;
+  }
+  return list.length?list[0].id:'gemini-flash-latest';
+}
+function modelLabel(){
+  const m=availableModels().find(x=>x.id===currentModel());
+  return m?(m.label||m.id):currentModel();
+}
+
+/* Free-tier limits vary by model and Google changes them. Rather than pretend
+   to know, we use a conservative default and let the user raise it once they
+   have seen their real limits in Cloud Console → Quotas. */
 function modelLimits(){
-  return GEMINI_MODELS[currentModel()];
+  return {rpm:state.newsRpm||5, rpd:state.newsDailyCap||20};
 }
 
 const NEWS_WINDOWS={
@@ -1082,6 +1150,14 @@ async function fetchNewsForTicker(symbol,opts){
           }
           continue;
         }
+        // Model retired mid-use — find a live one and retry once
+        if(/no longer available|not found for API version|is not supported/i.test(e.message||'') && attempt<maxTries){
+          try{
+            await discoverModels();
+            if(!silent)showToast('Model retired — switched to '+modelLabel());
+            continue;
+          }catch(_){}
+        }
         // Genuine failure, or we've run out of retries
         state.newsCache[s]={
           symbol:s,
@@ -1275,6 +1351,16 @@ function renderBatchBar(){
   </div>`;
 }
 
+/* Yesterday's failures should not masquerade as today's. */
+function clearNewsErrors(){
+  let n=0;
+  Object.keys(state.newsCache).forEach(k=>{
+    if(state.newsCache[k]&&state.newsCache[k].error){delete state.newsCache[k];n++;}
+  });
+  save();render();
+  showToast(n?`Cleared ${n} failed result${n===1?'':'s'}`:'No failures to clear');
+}
+
 function setNewsWindow(w){
   if(!NEWS_WINDOWS[w])return;
   state.newsWindow=w;save();render();
@@ -1324,9 +1410,11 @@ function renderNews(){
   const batching=!!state.newsBatch;
   const noBudget=budgetLeft()<=0;
   const canDo=Math.min(staleCount,budgetLeft());
+  const errCount=Object.values(state.newsCache).filter(c=>c&&c.error).length;
   const toolbar=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
     <button class="btn btn-primary btn-sm" ${anyLoading||batching||!staleCount||noBudget?'disabled':''} onclick="fetchStaleNews()">↻ Check ${canDo||staleCount}${staleCount>canDo&&canDo>0?` of ${staleCount}`:''}</button>
     <button class="btn btn-ghost btn-sm" ${anyLoading||batching||noBudget?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
+    ${errCount?`<button class="btn btn-ghost btn-sm" onclick="clearNewsErrors()">Clear ${errCount} error${errCount===1?'':'s'}</button>`:''}
     <button class="btn btn-ghost btn-sm" onclick="openGeminiSetup()">⚙</button>
   </div>`;
 
@@ -1336,7 +1424,7 @@ function renderNews(){
   const pct=Math.min(100,Math.round(used/cap*100));
   const budgetBar=`<div style="margin-bottom:12px">
     <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:11px;color:var(--ink3);margin-bottom:4px">
-      <span>Today: ${used} of ${cap} <span style="opacity:.6">· ${modelLimits().label}</span></span>
+      <span>Today: ${used} of ${cap}${state.geminiModel?` <span style="opacity:.6">· ${modelLabel()}</span>`:''}</span>
       <span style="color:${left?'var(--ink3)':'var(--warn-txt)'}">${left?`${left} left`:'spent — resets midnight PT'}</span>
     </div>
     <div style="height:3px;background:var(--surface3);border-radius:2px;overflow:hidden">
@@ -1500,62 +1588,101 @@ function renderNewsDetail(sym){
 function openGeminiSetup(){
   const root=document.getElementById('modalRoot');
   const has=!!state.geminiKey;
+  const models=availableModels();
+  const t=state.geminiTest;
+
+  const testBlock=(()=>{
+    if(!t)return '';
+    if(t.status==='testing')return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Testing…</div>`;
+    if(t.status==='ok')return `<div class="news-config" style="background:var(--accent2);color:var(--accent);margin-bottom:12px"><strong>Working</strong> — ${t.detail}</div>`;
+    if(t.status==='quota')return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Key is valid</strong><br>${t.detail}</div>`;
+    return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Failed</strong><br>${t.detail}${t.hint?`<br><br>${t.hint}`:''}</div>`;
+  })();
+
+  const modelBlock=(()=>{
+    if(!has)return `<div style="font-size:12px;color:var(--ink3);margin-bottom:12px">Save a key, then the app will look up which models it can use.</div>`;
+    if(state.modelsLoading)return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Looking up available models…</div>`;
+    if(!models.length){
+      return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px">
+        No models loaded yet.<br>Tap <strong>Find models</strong> to ask Google what this key can use.
+      </div>`;
+    }
+    return `<div class="field-row">
+      <div class="field-label">Model <span style="opacity:.5">— ${models.length} available</span></div>
+      <div style="display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto">
+        ${models.slice(0,12).map(m=>{
+          const sel=currentModel()===m.id;
+          return `<div onclick="setGeminiModel('${m.id}')" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
+            <div style="min-width:0">
+              <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.label||m.id}</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.id}</div>
+            </div>
+            ${sel?`<span style="color:var(--accent);flex-shrink:0">✓</span>`:''}
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-top:6px">
+        Listed newest-first. ${state.geminiModelsAt?`Checked ${fmtDateRelative(state.geminiModelsAt)}.`:''}
+      </div>
+    </div>`;
+  })();
+
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal">
-      <div class="modal-header"><div class="modal-title">Gemini API key</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div class="modal-header"><div class="modal-title">Gemini</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
       <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
         News digests use Gemini with Search grounding.<br>
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Get a free key at AI Studio →</a>
       </div>
       <div class="field-row">
         <div class="field-label">API key</div>
-        <input class="field-input" id="geminiKeyInput" type="password" placeholder="AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
+        <input class="field-input" id="geminiKeyInput" type="password" placeholder="AQ.… or AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
       </div>
+      ${modelBlock}
+      ${testBlock}
       <div class="field-row">
-        <div class="field-label">Model</div>
-        <div style="display:flex;flex-direction:column;gap:5px">
-          ${Object.keys(GEMINI_MODELS).map(k=>{
-            const m=GEMINI_MODELS[k];
-            const sel=currentModel()===k;
-            return `<div onclick="setGeminiModel('${k}')" style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
-              <div>
-                <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'}">${m.label}</div>
-                <div style="font-size:11px;color:var(--ink3)">${m.note}</div>
-              </div>
-              <div style="font-family:var(--font-mono);font-size:11px;color:var(--ink3);text-align:right">
-                ${m.rpd}/day<br>${m.rpm}/min
-              </div>
-            </div>`;
-          }).join('')}
+        <div class="field-label">Daily budget <span style="opacity:.5">— used ${usedToday()} today</span></div>
+        <div class="filter-chip-row" style="margin-bottom:4px">
+          ${[10,20,50,100,250].map(n=>`<div class="filter-chip ${(state.newsDailyCap||20)===n?'active':''}" data-cap="${n}" onclick="setNewsDailyCap(${n})">${n}</div>`).join('')}
         </div>
-        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5;margin-top:8px">
-          Free-tier limits, verified in Cloud Console.<br>
-          Used today: <strong style="color:${budgetLeft()?'var(--ink)':'var(--warn-txt)'}">${usedToday()} of ${dailyCap()}</strong>${budgetLeft()?'':' — resets at midnight Pacific'}
+        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5">
+          Your real limit is in Cloud Console → Generative Language API → Quotas.
+          Set this at or below it so a sweep rolls across days rather than failing.
         </div>
       </div>
-      ${(()=>{
-        const t=state.geminiTest;
-        if(!t)return '';
-        if(t.status==='testing')return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Testing…</div>`;
-        if(t.status==='ok')return `<div class="news-config" style="background:var(--accent2);color:var(--accent);margin-bottom:12px"><strong>Working</strong> — ${t.detail}</div>`;
-        if(t.status==='quota')return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Key is valid</strong><br>${t.detail}</div>`;
-        return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Failed</strong><br>${t.detail}${t.hint?`<br><br>${t.hint}`:''}</div>`;
-      })()}
       <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
         Stored in this browser only. Never sent anywhere but Google.
       </div>
       <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
         ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
+        <button class="btn btn-ghost" onclick="refreshModels()">Find models</button>
         <button class="btn btn-ghost" onclick="testGeminiKey()">Test</button>
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
       </div>
     </div>
   </div>`;
-  setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
 }
-/* Test the key and model together. Failures here are far easier to read
-   than a failure buried inside a 68-ticker batch. */
+
+/* Ask Google what this key can actually use. Ends the guessing. */
+async function refreshModels(){
+  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
+  if(typed)state.geminiKey=typed;
+  if(!state.geminiKey){showToast('Enter a key first');return;}
+
+  state.modelsLoading=true;state.geminiTest=null;
+  openGeminiSetup();
+  try{
+    const models=await discoverModels();
+    state.modelsLoading=false;
+    openGeminiSetup();
+    showToast(models.length?`Found ${models.length} models — using ${modelLabel()}`:'No usable models found');
+  }catch(e){
+    state.modelsLoading=false;
+    state.geminiTest={status:'fail',detail:e.message,hint:'Could not list models. Check the key is correct and the Generative Language API is enabled.'};
+    openGeminiSetup();
+  }
+}
+
 async function testGeminiKey(){
   const typed=document.getElementById('geminiKeyInput')?.value?.trim();
   const key=typed||state.geminiKey;
@@ -1564,6 +1691,15 @@ async function testGeminiKey(){
 
   state.geminiTest={status:'testing'};
   save();openGeminiSetup();
+
+  // No model list yet? Look one up first — otherwise we'd be guessing again.
+  if(!availableModels().length){
+    try{ await discoverModels(); }
+    catch(e){
+      state.geminiTest={status:'fail',detail:e.message,hint:'Could not reach the API. Check the key.'};
+      save();openGeminiSetup();return;
+    }
+  }
 
   try{
     const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent`,{
@@ -1576,9 +1712,8 @@ async function testGeminiKey(){
     });
 
     if(res.ok){
-      const d=await res.json();
-      const txt=(d.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
-      state.geminiTest={status:'ok',detail:`${modelLimits().label} responded`};
+      await res.json();
+      state.geminiTest={status:'ok',detail:`${modelLabel()} responded`};
       recordUsage();
     }else{
       const e=await res.json().catch(()=>({}));
@@ -1588,8 +1723,16 @@ async function testGeminiKey(){
         hint='The key was rejected. Copy it again from AI Studio.';
       }else if(res.status===403){
         hint='The key may be restricted, or the Generative Language API is not enabled on the project.';
-      }else if(res.status===404){
-        hint='This model does not exist or is not available to you. Try another.';
+      }else if(res.status===404||/no longer available|not found|not supported/i.test(msg)){
+        hint='That model is gone. Looking up what is available now…';
+        state.geminiTest={status:'fail',detail:msg,hint};
+        save();openGeminiSetup();
+        try{
+          await discoverModels();
+          state.geminiTest={status:'fail',detail:msg,hint:`Switched to ${modelLabel()}. Tap Test again.`};
+        }catch(_){}
+        save();openGeminiSetup();
+        return;
       }else if(res.status===429){
         hint='The key works — you have simply used up today\'s quota.';
         state.geminiTest={status:'quota',detail:hint};
@@ -1605,7 +1748,6 @@ async function testGeminiKey(){
 }
 
 function setGeminiModel(m){
-  if(!GEMINI_MODELS[m])return;
   const key=document.getElementById('geminiKeyInput')?.value?.trim();
   state.geminiModel=m;
   if(key)state.geminiKey=key;   // don't lose a key being typed
