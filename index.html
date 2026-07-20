@@ -245,11 +245,11 @@ let state={
   driveFileId:null,driveSynced:false,driveToken:null,
   sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
   tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
+  portSectorFilter:null,portGeoFilter:null,
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   newsBatch:null,newsAskWindow:null,
-  geminiModel:null,geminiModels:[],geminiModelsAt:null,newsUsage:{},geminiTest:null,
-  newsRpm:5,newsDailyCap:20,
+  geminiTest:null,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -266,8 +266,7 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
-      state.geminiModel=s.geminiModel||null;state.geminiModels=s.geminiModels||[];state.geminiModelsAt=s.geminiModelsAt||null;
-      state.newsUsage=s.newsUsage||{};state.newsRpm=s.newsRpm||5;state.newsDailyCap=s.newsDailyCap||20;
+
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
     }
@@ -282,8 +281,7 @@ function save(){
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
     geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,
-    geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,
-    newsUsage:state.newsUsage,newsRpm:state.newsRpm,newsDailyCap:state.newsDailyCap,
+
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
   }));
@@ -360,7 +358,6 @@ function renderFilterChips(){
 function render(){
   renderFilterChips();
   refreshSyncBadge();
-  ensureBatchTicker();
   const el=document.getElementById('mainContent');
   if(state.activeTab==='log')el.innerHTML=renderLog();
   else if(state.activeTab==='memos')renderMemosTab(el);
@@ -756,86 +753,31 @@ function prefillNewMemo(ticker){
    RNS / SEDAR+ / ASX feeds later means replacing fetchNewsFor() only.
 ══════════════════════════════════════ */
 
-/* Models change constantly — 2.0 Flash was shut down, 2.5 Flash is closed to
-   new users. Hardcoding names guarantees this breaks again. So instead the app
-   asks Google which models THIS key can actually use, and picks the best one.
-   Discovery is cached; refresh it from the settings panel if a model dies. */
+/* ── Gemini configuration ──────────────────────────────────────────
+   Deliberately minimal. Earlier versions tried to discover models, rank
+   them, track a daily budget and classify errors. All of it guessed at
+   numbers the app cannot see, and the guesses were wrong.
 
-// Preference order: newest capable Flash first. Only used to rank what
-// discovery returns — never to guess at a name that might not exist.
-const MODEL_PREFERENCE=[
-  /^gemini-flash-latest$/,        // auto-updating alias — safest long-term
-  /^gemini-3\.5-flash$/,
-  /^gemini-3\.1-flash$/,
-  /^gemini-3-flash$/,
-  /^gemini-2\.5-flash$/,
-  /^gemini-flash-lite-latest$/,
-  /^gemini-3\.1-flash-lite$/,
-  /^gemini-2\.5-flash-lite$/,
-];
+   IMPORTANT — why 429s appear when your quota looks untouched:
+   requests using the google_search grounding tool are counted against the
+   free tier's generate_content quota (20/day, 5/min), NOT against the
+   separate and much larger search-grounding quota. So Cloud Console can
+   show 2/500 used on a model while every grounded call is rejected.
+   This is a known Google-side behaviour, not something the app controls.
 
-function rankModel(id){
-  for(let i=0;i<MODEL_PREFERENCE.length;i++){
-    if(MODEL_PREFERENCE[i].test(id))return i;
-  }
-  // Unlisted but plausible: prefer flash, deprioritise preview/experimental
-  let score=100;
-  if(/flash/.test(id))score-=20;
-  if(/lite/.test(id))score+=5;
-  if(/preview|exp|thinking|tts|image|audio|embedding/.test(id))score+=200;
-  return score;
-}
+   Consequence: on the free tier you get roughly 20 grounded requests per
+   day and no more than about 5 per minute. The app no longer pretends to
+   track that — it simply reports what Google says. */
 
-async function discoverModels(){
-  if(!state.geminiKey)throw new Error('No API key');
-  const res=await fetch('https://generativelanguage.googleapis.com/v1beta/models',{
-    headers:{'x-goog-api-key':state.geminiKey}
-  });
-  if(!res.ok){
-    const e=await res.json().catch(()=>({}));
-    throw new Error(e.error?.message||`HTTP ${res.status}`);
-  }
-  const data=await res.json();
-  const models=(data.models||[])
-    .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
-    .map(m=>({
-      id:(m.name||'').replace(/^models\//,''),
-      label:m.displayName||'',
-    }))
-    // Text generation only — no image, audio, embedding or TTS models
-    .filter(m=>m.id&&!/embedding|aqa|tts|image|audio|robotics|veo|imagen|gemma/i.test(m.id))
-    .sort((a,b)=>rankModel(a.id)-rankModel(b.id));
+const GEMINI_MODEL='gemini-2.5-flash';   // named model from Cloud Console quotas
+const GEMINI_ENDPOINT='https://generativelanguage.googleapis.com/v1beta/models';
 
-  state.geminiModels=models;
-  state.geminiModelsAt=new Date().toISOString();
-  // If the current choice is gone, take the best available
-  if(models.length&&!models.find(m=>m.id===state.geminiModel)){
-    state.geminiModel=models[0].id;
-  }
-  save();
-  return models;
-}
+// Minimum gap between requests. The free tier allows ~5/min; 15s is safe.
+const MIN_REQUEST_GAP_MS=15000;
+let lastRequestAt=0;
 
-function availableModels(){
-  return state.geminiModels||[];
-}
-function currentModel(){
-  const list=availableModels();
-  if(state.geminiModel&&(!list.length||list.find(m=>m.id===state.geminiModel))){
-    return state.geminiModel;
-  }
-  return list.length?list[0].id:'gemini-flash-latest';
-}
-function modelLabel(){
-  const m=availableModels().find(x=>x.id===currentModel());
-  return m?(m.label||m.id):currentModel();
-}
-
-/* Free-tier limits vary by model and Google changes them. Rather than pretend
-   to know, we use a conservative default and let the user raise it once they
-   have seen their real limits in Cloud Console → Quotas. */
-function modelLimits(){
-  return {rpm:state.newsRpm||5, rpd:state.newsDailyCap||20};
+function msUntilNextAllowed(){
+  return Math.max(0, MIN_REQUEST_GAP_MS-(Date.now()-lastRequestAt));
 }
 
 const NEWS_WINDOWS={
@@ -861,36 +803,8 @@ function currentWindow(){return NEWS_WINDOWS[state.newsWindow]||NEWS_WINDOWS['7d
    The free tier caps requests per DAY, not just per minute. Throttling
    cannot help with that, so we track spend and let the user roll a full
    sweep across several days instead of failing halfway through one. */
-function todayKey(){
-  const d=new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-function usedToday(){
-  return (state.newsUsage&&state.newsUsage[todayKey()])||0;
-}
-function dailyCap(){
-  // Leave one in reserve so an ad-hoc lookup is always possible
-  return Math.max(1,modelLimits().rpd-1);
-}
-function budgetLeft(){
-  return Math.max(0,dailyCap()-usedToday());
-}
-function recordUsage(){
-  const k=todayKey();
-  if(!state.newsUsage)state.newsUsage={};
-  state.newsUsage[k]=(state.newsUsage[k]||0)+1;
-  // Keep only the last week so this never grows unbounded
-  const cutoff=new Date(Date.now()-7*86400000);
-  Object.keys(state.newsUsage).forEach(d=>{
-    if(new Date(d)<cutoff)delete state.newsUsage[d];
-  });
-}
-function windowCutoffISO(){
-  const w=currentWindow();
-  return new Date(Date.now()-w.days*86400000).toISOString().slice(0,10);
-}
 
-// Every ticker we care about: portfolio holdings + anything mentioned in the log
+/* ══ Which tickers we watch: holdings + anything mentioned in the log ══ */
 function newsUniverse(){
   const map={};
   state.portfolio.forEach(h=>{
@@ -908,7 +822,7 @@ function newsUniverse(){
   });
 }
 
-// Everything we know about a ticker, to steer the search and the analysis
+/* Everything known about a ticker, to steer the search and the analysis */
 function tickerContext(symbol){
   const s=symbol.replace(/^\$/,'').toUpperCase();
   const tag=state.tickerTags[s]||{};
@@ -1002,70 +916,79 @@ Return ONLY valid JSON. No markdown fences, no preamble, no commentary.
 Order items newest first. Set "material" to false for routine filings that change nothing (AGM notices, TR-1s, option grants, holding notifications). Set "official" to false for media coverage. Every date must fall on or after ${cutoff}.`;
 }
 
-// ── The provider. Swap this function to change news source. ──
+/* ── The one request. ──────────────────────────────────────────────
+   Swap this function to change news source (real RNS/SEDAR feeds later).
+   Errors are surfaced verbatim: whatever Google says is what you see. */
 async function fetchNewsFor(symbol,winKey){
   if(!state.geminiKey)throw new Error('No Gemini API key set');
   const win=winKey||state.newsWindow;
   const ctx=tickerContext(symbol);
   const prompt=buildNewsPrompt(ctx,win);
 
-  const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent`,{
+  lastRequestAt=Date.now();
+
+  const res=await fetch(`${GEMINI_ENDPOINT}/${GEMINI_MODEL}:generateContent`,{
     method:'POST',
     headers:{
       'Content-Type':'application/json',
-      'x-goog-api-key':state.geminiKey,   // the current, documented way to authenticate
+      'x-goog-api-key':state.geminiKey,
     },
     body:JSON.stringify({
       contents:[{parts:[{text:prompt}]}],
       tools:[{google_search:{}}],
-      generationConfig:{temperature:0.2}
+      generationConfig:{temperature:0.2},
     })
   });
 
   if(!res.ok){
-    let msg=res.status===400?'Invalid API key or request':`Gemini error ${res.status}`;
-    let retryAfter=0;
+    // Report exactly what Google returned. No interpretation.
+    let raw='';
     try{
-      const e=await res.json();
-      if(e.error&&e.error.message)msg=e.error.message;
-      // Google returns a RetryInfo block telling us how long to wait
-      const details=(e.error&&e.error.details)||[];
-      const ri=details.find(d=>(d['@type']||'').includes('RetryInfo'));
-      if(ri&&ri.retryDelay){
-        const m=String(ri.retryDelay).match(/([\d.]+)s/);
-        if(m)retryAfter=Math.ceil(parseFloat(m[1]));
+      const body=await res.json();
+      raw=body?.error?.message||JSON.stringify(body);
+      const details=body?.error?.details;
+      if(Array.isArray(details)){
+        const q=details.find(d=>(d['@type']||'').includes('QuotaFailure'));
+        if(q&&q.violations&&q.violations.length){
+          const v=q.violations[0];
+          // The metric names WHICH bucket was hit — the key diagnostic. Grounded
+          // requests land in generate_content_free_tier_requests, not the larger
+          // search-grounding quota, which is why Cloud Console can look untouched.
+          if(v.quotaMetric)raw+=`\n\nQuota metric: ${v.quotaMetric}`;
+          if(v.quotaId)raw+=`\nQuota id: ${v.quotaId}`;
+          if(v.quotaValue)raw+=`\nLimit: ${v.quotaValue}`;
+        }
+        const r=details.find(d=>(d['@type']||'').includes('RetryInfo'));
+        if(r&&r.retryDelay)raw+=`\nGoogle suggests retrying after ${r.retryDelay}`;
       }
-    }catch(_){}
-    const err=new Error(msg);
+    }catch(_){
+      raw=`HTTP ${res.status}`;
+    }
+    const err=new Error(raw);
     err.status=res.status;
-    err.rateLimited=(res.status===429);
-    // Google's daily-quota message differs from the per-minute one, and the
-    // retry delay is long. Both signals point the same way.
-    err.dailyQuota=(res.status===429)&&(/per day|daily|quota metric|exceeded your current quota/i.test(msg)||retryAfter>90);
-    err.retryAfter=retryAfter||(res.status===429?30:0);
+    err.raw=raw;
     throw err;
   }
 
   const data=await res.json();
   const cand=data.candidates&&data.candidates[0];
-  if(!cand)throw new Error('Gemini returned nothing');
+  if(!cand)throw new Error('Gemini returned no candidates');
 
   const text=(cand.content&&cand.content.parts||[]).map(p=>p.text||'').join('');
-
-  // Grounding metadata gives us the URLs Gemini actually consulted
   const grounding=cand.groundingMetadata||{};
-  const chunks=grounding.groundingChunks||[];
-  const sources=chunks.map(ch=>ch.web).filter(Boolean).map(w=>({title:w.title||'',uri:w.uri||''}));
+  const sources=(grounding.groundingChunks||[])
+    .map(ch=>ch.web).filter(Boolean)
+    .map(w=>({title:w.title||'',uri:w.uri||''}));
 
   const parsed=parseNewsJson(text);
   const w=NEWS_WINDOWS[win]||currentWindow();
-  // Belt and braces: drop anything the model returned outside the window it was given
-  const cutoffMs=Date.now()-w.days*86400000-86400000; // one day of slack for timezones
+  const cutoffMs=Date.now()-w.days*86400000-86400000;
   const items=(parsed.items||[]).filter(it=>{
-    if(!it||!it.date)return true;           // undated — keep, let the user judge
+    if(!it||!it.date)return true;
     const d=new Date(it.date).getTime();
     return isNaN(d)?true:d>=cutoffMs;
   });
+
   return {
     symbol:ctx.symbol,
     legalName:ctx.legalName,
@@ -1080,97 +1003,48 @@ async function fetchNewsFor(symbol,winKey){
 
 function parseNewsJson(text){
   let t=(text||'').trim();
-  // Gemini often wraps JSON in a fenced block despite instructions
   t=t.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
   try{return JSON.parse(t);}catch(_){}
-  // Fall back to the outermost braces
   const a=t.indexOf('{'),b=t.lastIndexOf('}');
-  if(a>=0&&b>a){
-    try{return JSON.parse(t.slice(a,b+1));}catch(_){}
-  }
-  return {items:[],overall:'Could not read the response. Try fetching again.'};
+  if(a>=0&&b>a){ try{return JSON.parse(t.slice(a,b+1));}catch(_){} }
+  return {items:[],overall:'Could not read the response. Try again.'};
 }
 
-// ── Orchestration ──
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
-// Returns 'ok' | 'error' | 'aborted'
+/* One ticker, one request. No retries, no budget guessing. */
 async function fetchNewsForTicker(symbol,opts){
   const s=symbol.replace(/^\$/,'').toUpperCase();
   if(!state.geminiKey){openGeminiSetup();return 'error';}
   if(state.newsLoading[s])return 'error';
   const silent=opts&&opts.silent;
   const win=(opts&&opts.window)||state.newsWindow;
-  const maxTries=3;
 
-  // Respect the daily budget — the free tier's real constraint
-  if(budgetLeft()<=0){
-    if(!silent)showToast(`Daily budget spent (${usedToday()}). Resets tomorrow.`);
-    return 'budget';
+  // Respect the per-minute gap. Grounded requests are rate-limited hard.
+  const wait=msUntilNextAllowed();
+  if(wait>0){
+    if(!silent)showToast(`Waiting ${Math.ceil(wait/1000)}s — free tier allows ~5 requests/min`);
+    await sleep(wait);
   }
+  if(state.newsBatch&&state.newsBatch.cancel)return 'aborted';
 
   state.newsLoading[s]=true;render();
   try{
-    for(let attempt=1;attempt<=maxTries;attempt++){
-      if(state.newsBatch&&state.newsBatch.cancel)return 'aborted';
-      try{
-        recordUsage();
-        const digest=await fetchNewsFor(s,win);
-        state.newsCache[s]=digest;
-        save();
-        if(state.driveSynced)scheduleDriveSync();
-        return 'ok';
-      }catch(e){
-        // A daily-quota 429 is not worth retrying — the budget is gone until tomorrow
-        if(e.rateLimited&&e.dailyQuota){
-          state.newsCache[s]={
-            symbol:s,
-            error:'Daily quota reached — try tomorrow',
-            rateLimited:true, dailyQuota:true,
-            fetchedAt:new Date().toISOString(), items:[]
-          };
-          save();
-          if(!silent)showToast('Daily Gemini quota reached — resets at midnight Pacific');
-          return 'budget';
-        }
-        // A per-minute 429 is worth waiting out
-        if(e.rateLimited&&attempt<maxTries){
-          const wait=Math.max(e.retryAfter||30,15)*1000*attempt;
-          if(state.newsBatch){
-            state.newsBatch.waitingUntil=Date.now()+wait;
-            state.newsBatch.note='rate limited — waiting '+Math.ceil(wait/1000)+'s';
-            render();
-          }else if(!silent){
-            showToast('Rate limited — retrying in '+Math.ceil(wait/1000)+'s');
-          }
-          await sleep(wait);
-          if(state.newsBatch){
-            state.newsBatch.waitingUntil=0;
-            state.newsBatch.note='';
-          }
-          continue;
-        }
-        // Model retired mid-use — find a live one and retry once
-        if(/no longer available|not found for API version|is not supported/i.test(e.message||'') && attempt<maxTries){
-          try{
-            await discoverModels();
-            if(!silent)showToast('Model retired — switched to '+modelLabel());
-            continue;
-          }catch(_){}
-        }
-        // Genuine failure, or we've run out of retries
-        state.newsCache[s]={
-          symbol:s,
-          error:e.rateLimited?'Rate limit — try again in a minute':e.message,
-          rateLimited:!!e.rateLimited,
-          fetchedAt:new Date().toISOString(),
-          items:[]
-        };
-        save();
-        if(!silent)showToast(e.rateLimited?'Rate limited — pause and retry':'News fetch failed: '+e.message);
-        return 'error';
-      }
-    }
+    const digest=await fetchNewsFor(s,win);
+    state.newsCache[s]=digest;
+    save();
+    if(state.driveSynced)scheduleDriveSync();
+    return 'ok';
+  }catch(e){
+    state.newsCache[s]={
+      symbol:s,
+      error:e.raw||e.message,
+      status:e.status||0,
+      fetchedAt:new Date().toISOString(),
+      items:[],
+    };
+    save();
+    if(!silent)showToast(`${s}: ${(e.message||'failed').slice(0,60)}`);
     return 'error';
   }finally{
     delete state.newsLoading[s];
@@ -1178,162 +1052,91 @@ async function fetchNewsForTicker(symbol,opts){
   }
 }
 
-/* Which tickers need re-checking, given the current window.
-   Each window has its own staleness threshold — a 24h check goes stale
-   in hours, a 90d review lasts weeks. Changing the window makes
-   everything stale, because you're asking a different question. */
+/* Which tickers have no digest, or one older than the window's shelf life. */
 function staleTickers(universe){
   const w=currentWindow();
   const cutoff=Date.now()-w.staleMs;
   const stale=(universe||newsUniverse()).filter(t=>{
     const c=state.newsCache[t.symbol];
     if(!c||!c.fetchedAt)return true;
-    if(c.dailyQuota)return true;                          // failed on quota, not on merit
-    if(c.window&&c.window!==state.newsWindow)return true; // a different question was asked
+    if(c.error)return true;
+    if(c.window&&c.window!==state.newsWindow)return true;
     return new Date(c.fetchedAt).getTime()<cutoff;
   });
-  // Order matters when the budget won't cover everything: the longest-neglected
-  // and the largest positions go first, so a partial sweep is still the right sweep.
+  // Longest-neglected and largest positions first.
   return stale.sort((a,b)=>{
     const ca=state.newsCache[a.symbol], cb=state.newsCache[b.symbol];
-    const ta=ca&&ca.fetchedAt&&!ca.dailyQuota?new Date(ca.fetchedAt).getTime():0;
-    const tb=cb&&cb.fetchedAt&&!cb.dailyQuota?new Date(cb.fetchedAt).getTime():0;
-    if(ta!==tb)return ta-tb;              // never checked (0) first, then oldest
-    return (b.weight||0)-(a.weight||0);   // then biggest position
+    const ta=ca&&ca.fetchedAt&&!ca.error?new Date(ca.fetchedAt).getTime():0;
+    const tb=cb&&cb.fetchedAt&&!cb.error?new Date(cb.fetchedAt).getTime():0;
+    if(ta!==tb)return ta-tb;
+    return (b.weight||0)-(a.weight||0);
   });
 }
 
-/* Free-tier pacing.
-   Gemini's free tier allows a limited number of requests per minute.
-   We space calls out to stay comfortably inside it, and the batch is
-   pausable, resumable, and cancellable so a long sweep is never a trap. */
-
-function paceMs(){
-  const rpm=Math.max(1,modelLimits().rpm);
-  return Math.ceil(60000/rpm)+2000;   // generous headroom — RPM limits are strict
-}
-
-async function runNewsBatch(tickers,label){
+/* Sequential run. Stops on the first 429 — on the free tier that means the
+   grounded allowance is gone and continuing just burns time. */
+async function runNewsBatch(tickers){
   if(!state.geminiKey){openGeminiSetup();return;}
   if(!tickers.length){showToast('Nothing to check');return;}
-  if(state.newsBatch){showToast('A batch is already running');return;}
-
-  const left=budgetLeft();
-  if(left<=0){
-    showToast(`Daily budget spent (${usedToday()} today). Resets tomorrow.`);
-    return;
-  }
-
-  // Only take what today's budget allows. The rest rolls to tomorrow.
-  const willDo=tickers.slice(0,left);
-  const deferred=tickers.length-willDo.length;
+  if(state.newsBatch){showToast('Already running');return;}
 
   const w=currentWindow();
-  const est=Math.ceil(willDo.length*paceMs()/60000);
-  const ok=confirm(
-    `Check ${willDo.length} ticker${willDo.length===1?'':'s'} for news in ${w.phrase}?\n\n`+
-    (deferred?`${deferred} more will roll over to tomorrow — today's budget allows ${left}.\n\n`:'')+
-    `Paced for the free tier — roughly ${est} minute${est===1?'':'s'}.\n`+
-    `The app stays usable while this runs.`
-  );
-  if(!ok)return;
-  tickers=willDo;
+  const mins=Math.ceil(tickers.length*MIN_REQUEST_GAP_MS/60000);
+  if(!confirm(
+    `Check ${tickers.length} ticker${tickers.length===1?'':'s'} over ${w.phrase}?\n\n`+
+    `Paced at one every ${MIN_REQUEST_GAP_MS/1000}s — about ${mins} minute${mins===1?'':'s'}.\n\n`+
+    `The free tier allows roughly 20 grounded requests per day, so a long run may stop early.`
+  ))return;
 
-  state.newsBatch={
-    total:tickers.length, done:0, ok:0, failed:0,
-    current:null, cancel:false, paused:false,
-    waitingUntil:0, note:'', label:label||'News',
-    startedAt:Date.now(),
-  };
+  state.newsBatch={total:tickers.length,done:0,ok:0,failed:0,current:null,cancel:false,paused:false,stoppedBy:null};
   render();
 
   for(let i=0;i<tickers.length;i++){
     if(state.newsBatch.cancel)break;
-
-    // Honour a pause without burning CPU
-    while(state.newsBatch.paused&&!state.newsBatch.cancel){
-      await sleep(300);
-    }
+    while(state.newsBatch.paused&&!state.newsBatch.cancel)await sleep(300);
     if(state.newsBatch.cancel)break;
 
     const sym=tickers[i].symbol||tickers[i];
-    state.newsBatch.current=sym;
-    render();
+    state.newsBatch.current=sym;render();
 
     const result=await fetchNewsForTicker(sym,{silent:true});
     if(result==='aborted')break;
-    if(result==='budget'){
-      state.newsBatch.budgetHit=true;
-      break;
-    }
 
     state.newsBatch.done++;
-    if(result==='ok')state.newsBatch.ok++; else state.newsBatch.failed++;
-    render();
-
-    // Pace the next call, unless we're done
-    if(i<tickers.length-1&&!state.newsBatch.cancel){
-      const gap=paceMs();
-      state.newsBatch.waitingUntil=Date.now()+gap;
-      render();
-      await sleep(gap);
-      state.newsBatch.waitingUntil=0;
+    if(result==='ok'){state.newsBatch.ok++;}
+    else{
+      state.newsBatch.failed++;
+      const c=state.newsCache[sym];
+      if(c&&c.status===429){state.newsBatch.stoppedBy=c.error;break;}
     }
+    render();
   }
 
   const b=state.newsBatch;
-  const cancelled=b.cancel;
-  const budgetHit=b.budgetHit;
-  const {ok:okCount,failed}=b;
-  state.newsBatch=null;
-  save();render();
+  const {ok:okCount,failed,cancel,stoppedBy}=b;
+  state.newsBatch=null;save();render();
 
-  if(budgetHit){
-    showToast(`Daily quota reached after ${okCount} — resume tomorrow`);
-  }else if(cancelled){
-    showToast(`Stopped — ${okCount} checked`);
-  }else if(failed){
-    showToast(`Checked ${okCount}, ${failed} failed`);
-  }else{
-    showToast(`Checked ${okCount} ticker${okCount===1?'':'s'}`);
-  }
+  if(stoppedBy)      showToast(`Stopped after ${okCount} — rate limited`);
+  else if(cancel)    showToast(`Stopped — ${okCount} checked`);
+  else if(failed)    showToast(`Checked ${okCount}, ${failed} failed`);
+  else               showToast(`Checked ${okCount} ticker${okCount===1?'':'s'}`);
 }
 
-async function fetchAllNews(){
-  await runNewsBatch(newsUniverse(),'All tickers');
-}
+async function fetchAllNews(){ await runNewsBatch(newsUniverse()); }
 async function fetchStaleNews(){
   const stale=staleTickers();
   if(!stale.length){showToast('Everything is current');return;}
-  await runNewsBatch(stale,'Stale tickers');
+  await runNewsBatch(stale);
 }
 
-function pauseNewsBatch(){
-  if(!state.newsBatch)return;
-  state.newsBatch.paused=!state.newsBatch.paused;
-  render();
-}
-function cancelNewsBatch(){
-  if(!state.newsBatch)return;
-  state.newsBatch.cancel=true;
-  state.newsBatch.paused=false;
-  render();
-}
+function pauseNewsBatch(){ if(state.newsBatch){state.newsBatch.paused=!state.newsBatch.paused;render();} }
+function cancelNewsBatch(){ if(state.newsBatch){state.newsBatch.cancel=true;state.newsBatch.paused=false;render();} }
 
 function renderBatchBar(){
   const b=state.newsBatch;
   if(!b)return '<div id="batchBar"></div>';
   const pct=b.total?Math.round(b.done/b.total*100):0;
-  const waiting=b.waitingUntil&&b.waitingUntil>Date.now();
-  const secs=waiting?Math.ceil((b.waitingUntil-Date.now())/1000):0;
-
-  let status;
-  if(b.paused)            status='paused';
-  else if(b.note)         status=b.note;
-  else if(waiting)        status=`next in ${secs}s`;
-  else if(b.current)      status=`searching ${b.current}…`;
-  else                    status='starting…';
-
+  const status=b.paused?'paused':(b.current?`searching ${b.current}…`:'starting…');
   return `<div id="batchBar" style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
       <div style="min-width:0">
@@ -1351,25 +1154,17 @@ function renderBatchBar(){
   </div>`;
 }
 
-/* Yesterday's failures should not masquerade as today's. */
 function clearNewsErrors(){
   let n=0;
   Object.keys(state.newsCache).forEach(k=>{
     if(state.newsCache[k]&&state.newsCache[k].error){delete state.newsCache[k];n++;}
   });
   save();render();
-  showToast(n?`Cleared ${n} failed result${n===1?'':'s'}`:'No failures to clear');
+  showToast(n?`Cleared ${n} error${n===1?'':'s'}`:'No errors to clear');
 }
 
-function setNewsWindow(w){
-  if(!NEWS_WINDOWS[w])return;
-  state.newsWindow=w;save();render();
-}
-// The window for a single ad-hoc lookup, independent of the global setting
-function setAskWindow(w){
-  if(!NEWS_WINDOWS[w])return;
-  state.newsAskWindow=w;render();
-}
+function setNewsWindow(w){ if(NEWS_WINDOWS[w]){state.newsWindow=w;save();render();} }
+function setAskWindow(w){ if(NEWS_WINDOWS[w]){state.newsAskWindow=w;render();} }
 
 /* ── News tab ── */
 function renderNews(){
@@ -1377,7 +1172,7 @@ function renderNews(){
     return `<div class="empty-state">
       <div class="empty-icon">📰</div>
       <div class="empty-title">Connect Gemini</div>
-      <div class="empty-body">News digests need a Gemini API key.<br>Free tier is plenty for personal use.</div>
+      <div class="empty-body">News digests need a Gemini API key.</div>
       <button class="btn btn-primary" style="margin-top:16px" onclick="openGeminiSetup()">Add API key</button>
     </div>`;
   }
@@ -1390,15 +1185,15 @@ function renderNews(){
   if(state.activeNewsTicker)return renderNewsDetail(state.activeNewsTicker);
 
   const anyLoading=Object.keys(state.newsLoading).length>0;
+  const batching=!!state.newsBatch;
+  const staleCount=staleTickers(universe).length;
   const cached=universe.filter(t=>state.newsCache[t.symbol]&&!state.newsCache[t.symbol].error).length;
   const materialCount=universe.reduce((n,t)=>{
     const c=state.newsCache[t.symbol];
     if(!c||!c.items)return n;
     return n+c.items.filter(i=>i.material!==false).length;
   },0);
-
-  const w=currentWindow();
-  const staleCount=staleTickers(universe).length;
+  const errCount=Object.values(state.newsCache).filter(c=>c&&c.error).length;
 
   const windowPicker=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
     <span class="section-label" style="margin:0">Window</span>
@@ -1407,29 +1202,15 @@ function renderNews(){
     </div>
   </div>`;
 
-  const batching=!!state.newsBatch;
-  const noBudget=budgetLeft()<=0;
-  const canDo=Math.min(staleCount,budgetLeft());
-  const errCount=Object.values(state.newsCache).filter(c=>c&&c.error).length;
   const toolbar=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-    <button class="btn btn-primary btn-sm" ${anyLoading||batching||!staleCount||noBudget?'disabled':''} onclick="fetchStaleNews()">↻ Check ${canDo||staleCount}${staleCount>canDo&&canDo>0?` of ${staleCount}`:''}</button>
-    <button class="btn btn-ghost btn-sm" ${anyLoading||batching||noBudget?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
+    <button class="btn btn-primary btn-sm" ${anyLoading||batching||!staleCount?'disabled':''} onclick="fetchStaleNews()">↻ Check ${staleCount}</button>
+    <button class="btn btn-ghost btn-sm" ${anyLoading||batching?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
     ${errCount?`<button class="btn btn-ghost btn-sm" onclick="clearNewsErrors()">Clear ${errCount} error${errCount===1?'':'s'}</button>`:''}
     <button class="btn btn-ghost btn-sm" onclick="openGeminiSetup()">⚙</button>
   </div>`;
 
-  const used=usedToday();
-  const cap=dailyCap();
-  const left=budgetLeft();
-  const pct=Math.min(100,Math.round(used/cap*100));
-  const budgetBar=`<div style="margin-bottom:12px">
-    <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:11px;color:var(--ink3);margin-bottom:4px">
-      <span>Today: ${used} of ${cap}${state.geminiModel?` <span style="opacity:.6">· ${modelLabel()}</span>`:''}</span>
-      <span style="color:${left?'var(--ink3)':'var(--warn-txt)'}">${left?`${left} left`:'spent — resets midnight PT'}</span>
-    </div>
-    <div style="height:3px;background:var(--surface3);border-radius:2px;overflow:hidden">
-      <div style="height:100%;width:${pct}%;background:${left?'var(--accent)':'var(--warn-txt)'};border-radius:2px;transition:width .3s"></div>
-    </div>
+  const note=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">
+    ${GEMINI_MODEL} · free tier allows ~20 grounded requests/day
   </div>`;
 
   const summary=cached?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${cached} of ${universe.length} checked · ${materialCount} material item${materialCount===1?'':'s'}</div>`:'';
@@ -1446,12 +1227,11 @@ function renderNews(){
       right=`<span class="dot pulse" style="background:var(--accent)"></span>`;
       statusLine=`<span style="color:var(--accent)">searching…</span>`;
     }else if(!c){
-      right=`<button class="btn btn-ghost btn-sm" ${batching||noBudget?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Fetch</button>`;
+      right=`<button class="btn btn-ghost btn-sm" ${batching?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Fetch</button>`;
       statusLine=`<span style="color:var(--ink3)">not checked</span>`;
     }else if(c.error){
-      const dq=c.dailyQuota;
-      right=`<button class="btn btn-ghost btn-sm" ${batching||noBudget?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Retry</button>`;
-      statusLine=`<span style="color:var(--warn-txt)">${dq?'quota — retry tomorrow':c.error.slice(0,40)}</span>`;
+      right=`<button class="btn btn-ghost btn-sm" ${batching?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Retry</button>`;
+      statusLine=`<span style="color:var(--warn-txt)">${c.status===429?'rate limited':(c.error||'failed').slice(0,38)}</span>`;
     }else{
       const material=(c.items||[]).filter(i=>i.material!==false);
       const pos=material.filter(i=>i.impact==='positive').length;
@@ -1474,14 +1254,14 @@ function renderNews(){
           <span class="ticker-name">${t.symbol}</span>
           <span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${weightLine}</span>
         </div>
-        <div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name||''}</div>
+        <div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
         <div style="font-size:10px;font-family:var(--font-mono);margin-top:1px">${statusLine}</div>
       </div>
       <div style="margin-left:10px;flex-shrink:0">${right}</div>
     </div>`;
   }).join('');
 
-  return windowPicker+toolbar+budgetBar+renderBatchBar()+summary+`<div class="ticker-list" style="margin-bottom:60px">${rows}</div>`;
+  return windowPicker+toolbar+note+renderBatchBar()+summary+`<div class="ticker-list" style="margin-bottom:60px">${rows}</div>`;
 }
 
 function openNewsFor(sym){
@@ -1496,28 +1276,22 @@ function renderNewsDetail(sym){
   const c=state.newsCache[sym];
   const ctx=tickerContext(sym);
   const loading=!!state.newsLoading[sym];
-
-  const noBudget=budgetLeft()<=0;
   const askWin=state.newsAskWindow||state.newsWindow;
 
   const header=`<div style="margin-bottom:14px">
     <button class="back-btn" onclick="closeNewsDetail()" style="margin-bottom:10px">← News</button>
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
-      <div style="min-width:0">
-        <div style="font-family:var(--font-serif);font-size:24px">${sym}</div>
-        ${ctx.legalName?`<div style="font-size:13px;color:var(--ink3);font-family:var(--font-mono)">${ctx.legalName}</div>`:''}
-      </div>
-    </div>
+    <div style="font-family:var(--font-serif);font-size:24px">${sym}</div>
+    ${ctx.legalName?`<div style="font-size:13px;color:var(--ink3);font-family:var(--font-mono)">${ctx.legalName}</div>`:''}
     <div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap">
       <span class="section-label" style="margin:0">Check</span>
       ${Object.keys(NEWS_WINDOWS).map(k=>`<div class="filter-chip ${askWin===k?'active':''}" onclick="setAskWindow('${k}')">${NEWS_WINDOWS[k].label}</div>`).join('')}
-      <button class="btn btn-primary btn-sm" ${loading||noBudget?'disabled':''} onclick="fetchNewsForTicker('${sym}',{window:'${askWin}'})" style="margin-left:auto">${loading?'Searching…':(noBudget?'No budget':(c?'↻ Refresh':'Fetch'))}</button>
+      <button class="btn btn-primary btn-sm" ${loading?'disabled':''} onclick="fetchNewsForTicker('${sym}',{window:'${askWin}'})" style="margin-left:auto">${loading?'Searching…':(c?'↻ Refresh':'Fetch')}</button>
     </div>
-    ${ctx.inPortfolio||ctx.sector?`<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;font-family:var(--font-mono);font-size:11px">
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;font-family:var(--font-mono);font-size:11px">
       ${ctx.inPortfolio?`<span style="color:var(--ink3)">${(ctx.weight*100).toFixed(1)}% of portfolio</span>`:'<span style="color:var(--ink3)">watchlist</span>'}
       ${ctx.sector?`<span style="color:var(--hash-txt)">${ctx.sector}</span>`:''}
       ${ctx.memo?`<span style="color:var(--accent);cursor:pointer" onclick="setTab('memos',{memoId:'${ctx.memo.id}'})">memo →</span>`:'<span style="color:var(--warn-txt)">no memo</span>'}
-    </div>`:''}
+    </div>
   </div>`;
 
   if(loading){
@@ -1527,16 +1301,16 @@ function renderNewsDetail(sym){
     return header+`<div class="empty-state"><div class="empty-icon">📰</div><div class="empty-body">No digest yet for ${sym}.</div></div>`;
   }
   if(c.error){
-    const dq=c.dailyQuota;
     return header+`<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt)">
-      <strong>${dq?'Daily quota reached':'Fetch failed'}</strong><br>
-      ${dq?'The free tier\'s daily allowance is spent. It resets at midnight Pacific — pick this up tomorrow, or lower the daily cap so a sweep spreads out.':c.error}
+      <strong>${c.status?`HTTP ${c.status}`:'Failed'}</strong> — Google's response:<br>
+      <span style="font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-word">${c.error}</span>
     </div>`;
   }
 
   const items=c.items||[];
   const material=items.filter(i=>i.material!==false);
   const routine=items.filter(i=>i.material===false);
+  const usedWindow=c.window&&NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window]:currentWindow();
 
   const overall=c.overall?`<div style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:14px">
     <div class="section-label" style="margin-bottom:6px;color:var(--accent)">The picture</div>
@@ -1545,24 +1319,23 @@ function renderNewsDetail(sym){
   </div>`:'';
 
   const renderItem=(n)=>{
-    const impactColor=n.impact==='positive'?'var(--accent)':n.impact==='negative'?'var(--danger)':'var(--ink3)';
-    const impactMark=n.impact==='positive'?'▲':n.impact==='negative'?'▼':'●';
+    const col=n.impact==='positive'?'var(--accent)':n.impact==='negative'?'var(--danger)':'var(--ink3)';
+    const mark=n.impact==='positive'?'▲':n.impact==='negative'?'▼':'●';
     return `<div class="entry-card" style="margin-bottom:10px">
       <div class="entry-meta">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="color:${impactColor};font-size:12px">${impactMark}</span>
+          <span style="color:${col};font-size:12px">${mark}</span>
           <span class="entry-date">${n.date||''}</span>
           ${n.source?`<span style="font-family:var(--font-mono);font-size:10px;padding:1px 6px;border-radius:4px;background:${n.official?'var(--tag-bg)':'var(--surface3)'};color:${n.official?'var(--tag-txt)':'var(--ink3)'}">${n.source}</span>`:''}
         </div>
       </div>
       <div style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.45;margin-bottom:6px">${n.headline||''}</div>
       ${n.summary?`<div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:8px">${n.summary}</div>`:''}
-      ${n.relevance?`<div style="font-size:13px;line-height:1.6;color:var(--ink);border-left:2px solid ${impactColor};padding-left:10px;margin-bottom:8px">${n.relevance}</div>`:''}
+      ${n.relevance?`<div style="font-size:13px;line-height:1.6;color:var(--ink);border-left:2px solid ${col};padding-left:10px;margin-bottom:8px">${n.relevance}</div>`:''}
       ${n.url?`<a href="${n.url}" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;color:var(--accent);text-decoration:none">Read the original →</a>`:''}
     </div>`;
   };
 
-  const usedWindow=c.window&&NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window]:currentWindow();
   const materialHtml=material.length
     ? `<div class="section-label">Material — ${material.length}</div>`+material.map(renderItem).join('')
     : `<div class="news-config" style="margin-bottom:14px">Nothing announced in ${usedWindow.phrase}.</div>`;
@@ -1578,191 +1351,9 @@ function renderNewsDetail(sym){
       </div>`
     : '<div style="margin-bottom:60px"></div>';
 
-  const staleWarn=c.window&&c.window!==state.newsWindow?` · asked for ${usedWindow.label}, now showing ${currentWindow().label}`:'';
-  const stamp=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-align:center;margin:14px 0">Checked ${fmtDateRelative(c.fetchedAt)} over ${usedWindow.phrase}${staleWarn?`<br><span style="color:var(--warn-txt)">${staleWarn.slice(3)}</span>`:''}</div>`;
+  const stamp=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-align:center;margin:14px 0">Checked ${fmtDateRelative(c.fetchedAt)} over ${usedWindow.phrase}</div>`;
 
   return header+overall+materialHtml+routineHtml+stamp+sourcesHtml;
-}
-
-/* ── Gemini key setup ── */
-function openGeminiSetup(){
-  const root=document.getElementById('modalRoot');
-  const has=!!state.geminiKey;
-  const models=availableModels();
-  const t=state.geminiTest;
-
-  const testBlock=(()=>{
-    if(!t)return '';
-    if(t.status==='testing')return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Testing…</div>`;
-    if(t.status==='ok')return `<div class="news-config" style="background:var(--accent2);color:var(--accent);margin-bottom:12px"><strong>Working</strong> — ${t.detail}</div>`;
-    if(t.status==='quota')return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Key is valid</strong><br>${t.detail}</div>`;
-    return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Failed</strong><br>${t.detail}${t.hint?`<br><br>${t.hint}`:''}</div>`;
-  })();
-
-  const modelBlock=(()=>{
-    if(!has)return `<div style="font-size:12px;color:var(--ink3);margin-bottom:12px">Save a key, then the app will look up which models it can use.</div>`;
-    if(state.modelsLoading)return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Looking up available models…</div>`;
-    if(!models.length){
-      return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px">
-        No models loaded yet.<br>Tap <strong>Find models</strong> to ask Google what this key can use.
-      </div>`;
-    }
-    return `<div class="field-row">
-      <div class="field-label">Model <span style="opacity:.5">— ${models.length} available</span></div>
-      <div style="display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto">
-        ${models.slice(0,12).map(m=>{
-          const sel=currentModel()===m.id;
-          return `<div onclick="setGeminiModel('${m.id}')" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
-            <div style="min-width:0">
-              <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.label||m.id}</div>
-              <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.id}</div>
-            </div>
-            ${sel?`<span style="color:var(--accent);flex-shrink:0">✓</span>`:''}
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-top:6px">
-        Listed newest-first. ${state.geminiModelsAt?`Checked ${fmtDateRelative(state.geminiModelsAt)}.`:''}
-      </div>
-    </div>`;
-  })();
-
-  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-    <div class="modal">
-      <div class="modal-header"><div class="modal-title">Gemini</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
-      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
-        News digests use Gemini with Search grounding.<br>
-        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Get a free key at AI Studio →</a>
-      </div>
-      <div class="field-row">
-        <div class="field-label">API key</div>
-        <input class="field-input" id="geminiKeyInput" type="password" placeholder="AQ.… or AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
-      </div>
-      ${modelBlock}
-      ${testBlock}
-      <div class="field-row">
-        <div class="field-label">Daily budget <span style="opacity:.5">— used ${usedToday()} today</span></div>
-        <div class="filter-chip-row" style="margin-bottom:4px">
-          ${[10,20,50,100,250].map(n=>`<div class="filter-chip ${(state.newsDailyCap||20)===n?'active':''}" data-cap="${n}" onclick="setNewsDailyCap(${n})">${n}</div>`).join('')}
-        </div>
-        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5">
-          Your real limit is in Cloud Console → Generative Language API → Quotas.
-          Set this at or below it so a sweep rolls across days rather than failing.
-        </div>
-      </div>
-      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
-        Stored in this browser only. Never sent anywhere but Google.
-      </div>
-      <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
-        ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
-        <button class="btn btn-ghost" onclick="refreshModels()">Find models</button>
-        <button class="btn btn-ghost" onclick="testGeminiKey()">Test</button>
-        <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
-      </div>
-    </div>
-  </div>`;
-}
-
-/* Ask Google what this key can actually use. Ends the guessing. */
-async function refreshModels(){
-  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
-  if(typed)state.geminiKey=typed;
-  if(!state.geminiKey){showToast('Enter a key first');return;}
-
-  state.modelsLoading=true;state.geminiTest=null;
-  openGeminiSetup();
-  try{
-    const models=await discoverModels();
-    state.modelsLoading=false;
-    openGeminiSetup();
-    showToast(models.length?`Found ${models.length} models — using ${modelLabel()}`:'No usable models found');
-  }catch(e){
-    state.modelsLoading=false;
-    state.geminiTest={status:'fail',detail:e.message,hint:'Could not list models. Check the key is correct and the Generative Language API is enabled.'};
-    openGeminiSetup();
-  }
-}
-
-async function testGeminiKey(){
-  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
-  const key=typed||state.geminiKey;
-  if(!key){showToast('Enter a key first');return;}
-  if(typed)state.geminiKey=typed;
-
-  state.geminiTest={status:'testing'};
-  save();openGeminiSetup();
-
-  // No model list yet? Look one up first — otherwise we'd be guessing again.
-  if(!availableModels().length){
-    try{ await discoverModels(); }
-    catch(e){
-      state.geminiTest={status:'fail',detail:e.message,hint:'Could not reach the API. Check the key.'};
-      save();openGeminiSetup();return;
-    }
-  }
-
-  try{
-    const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel()}:generateContent`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-goog-api-key':key},
-      body:JSON.stringify({
-        contents:[{parts:[{text:'Reply with exactly: OK'}]}],
-        generationConfig:{maxOutputTokens:10},
-      })
-    });
-
-    if(res.ok){
-      await res.json();
-      state.geminiTest={status:'ok',detail:`${modelLabel()} responded`};
-      recordUsage();
-    }else{
-      const e=await res.json().catch(()=>({}));
-      const msg=e.error?.message||`HTTP ${res.status}`;
-      let hint='';
-      if(res.status===400&&/api key not valid/i.test(msg)){
-        hint='The key was rejected. Copy it again from AI Studio.';
-      }else if(res.status===403){
-        hint='The key may be restricted, or the Generative Language API is not enabled on the project.';
-      }else if(res.status===404||/no longer available|not found|not supported/i.test(msg)){
-        hint='That model is gone. Looking up what is available now…';
-        state.geminiTest={status:'fail',detail:msg,hint};
-        save();openGeminiSetup();
-        try{
-          await discoverModels();
-          state.geminiTest={status:'fail',detail:msg,hint:`Switched to ${modelLabel()}. Tap Test again.`};
-        }catch(_){}
-        save();openGeminiSetup();
-        return;
-      }else if(res.status===429){
-        hint='The key works — you have simply used up today\'s quota.';
-        state.geminiTest={status:'quota',detail:hint};
-        save();openGeminiSetup();
-        return;
-      }
-      state.geminiTest={status:'fail',detail:msg,hint};
-    }
-  }catch(err){
-    state.geminiTest={status:'fail',detail:err.message,hint:'Network error — check your connection.'};
-  }
-  save();openGeminiSetup();
-}
-
-function setGeminiModel(m){
-  const key=document.getElementById('geminiKeyInput')?.value?.trim();
-  state.geminiModel=m;
-  if(key)state.geminiKey=key;   // don't lose a key being typed
-  state.geminiTest=null;        // a past result says nothing about a new model
-  save();
-  openGeminiSetup();
-}
-function saveGeminiKey(){
-  const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
-  if(!k){showToast('Enter a key');return;}
-  state.geminiKey=k;state.geminiTest=null;save();closeModal();render();showToast('Gemini key saved');
-}
-function clearGeminiKey(){
-  if(!confirm('Remove the Gemini key? Cached digests are kept.'))return;
-  state.geminiKey=null;save();closeModal();render();showToast('Key removed');
 }
 
 /* ══════════════════════════════════════
@@ -2033,19 +1624,27 @@ function renderPortfolio(){
   const geoRows=Object.entries(geos).sort((a,b)=>b[1]-a[1]);
   const maxSec=sectorRows[0]?.[1]||1;const maxGeo=geoRows[0]?.[1]||1;
 
-  const sectorHtml=sectorRows.map(([s,w])=>`
-    <div class="ticker-row" style="cursor:default">
-      <div class="ticker-name" style="color:${s==='Untagged'?'var(--ink3)':'var(--hash-txt)'};min-width:80px">${s}</div>
-      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxSec*100)}%;background:${s==='Untagged'?'var(--ink3)':'var(--hash-txt)'}"></div></div>
-      <div class="ticker-count">${(w*100).toFixed(1)}%</div>
-    </div>`).join('');
+  const secFilter=state.portSectorFilter;
+  const geoFilter=state.portGeoFilter;
 
-  const geoHtml=geoRows.map(([g,w])=>`
-    <div class="ticker-row" style="cursor:default">
-      <div class="ticker-name" style="min-width:80px">${g}</div>
+  const sectorHtml=sectorRows.map(([s,w])=>{
+    const on=secFilter===s;
+    const grey=s==='Untagged';
+    return `<div class="ticker-row" onclick="togglePortSector('${s.replace(/'/g,"\\'")}')" style="cursor:pointer;${on?'border-color:var(--hash-txt);background:var(--hash-bg);':''}">
+      <div class="ticker-name" style="color:${grey?'var(--ink3)':'var(--hash-txt)'};min-width:80px">${on?'✓ ':''}${s}</div>
+      <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxSec*100)}%;background:${grey?'var(--ink3)':'var(--hash-txt)'}"></div></div>
+      <div class="ticker-count">${(w*100).toFixed(1)}%</div>
+    </div>`;
+  }).join('');
+
+  const geoHtml=geoRows.map(([g,w])=>{
+    const on=geoFilter===g;
+    return `<div class="ticker-row" onclick="togglePortGeo('${g.replace(/'/g,"\\'")}')" style="cursor:pointer;${on?'border-color:var(--accent);background:var(--accent2);':''}">
+      <div class="ticker-name" style="min-width:80px">${on?'✓ ':''}${g}</div>
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxGeo*100)}%"></div></div>
       <div class="ticker-count">${(w*100).toFixed(1)}%</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   const geoSection=geoRows.length?`<div class="section-label">Geography</div><div class="ticker-list" style="margin-bottom:16px">${geoHtml}</div>`:'';
 
   // selection mode toolbar
@@ -2063,9 +1662,23 @@ function renderPortfolio(){
         <button class="btn btn-ghost btn-sm" onclick="enterSelectMode()">⊞ Tag holdings${untaggedCount?` (${untaggedCount} untagged)`:''}</button>
       </div>`;
 
-  // holdings list sorted by weight
-  const sorted=[...rows].sort((a,b)=>parseFloat(b.weight_pct||0)-parseFloat(a.weight_pct||0));
+  // holdings list — filtered, then sorted by weight descending
+  let shown=rows;
+  if(secFilter) shown=shown.filter(h=>(h.sector||'Untagged')===secFilter);
+  if(geoFilter) shown=shown.filter(h=>h.geography===geoFilter);
+  const sorted=[...shown].sort((a,b)=>parseFloat(b.weight_pct||0)-parseFloat(a.weight_pct||0));
   const maxW=parseFloat(sorted[0]?.weight_pct||1);
+
+  // A clear way back to everything
+  const activeFilters=[secFilter,geoFilter].filter(Boolean);
+  const filterBanner=activeFilters.length?`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;margin-bottom:10px;border-radius:var(--r);background:var(--surface2);border:1px solid var(--border2)">
+    <div style="font-size:12px;color:var(--ink2);min-width:0">
+      Showing <strong>${sorted.length}</strong> of ${rows.length} —
+      <span style="font-family:var(--font-mono);color:var(--hash-txt)">${activeFilters.join(' · ')}</span>
+      <span style="font-family:var(--font-mono);color:var(--ink3)"> · ${(sorted.reduce((s,h)=>s+parseFloat(h.weight_pct||0),0)*100).toFixed(1)}%</span>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="clearPortFilters()" style="flex-shrink:0">See all</button>
+  </div>`:'';
 
   const holdingsHtml=sorted.map(h=>{
     const wPct=(parseFloat(h.weight_pct||0)*100).toFixed(1);
@@ -2085,12 +1698,31 @@ function renderPortfolio(){
   return connectBtn+syncInfo+summaryHtml+
     `<div class="section-label">Sector</div><div class="ticker-list" style="margin-bottom:16px">${sectorHtml}</div>`+
     geoSection+
-    `<div class="section-label">Holdings (${sorted.length}) — by weight</div>`+
+    `<div class="section-label">Holdings (${sorted.length}${activeFilters.length?` of ${rows.length}`:''}) — by weight</div>`+
+    filterBanner+
     tagToolbar+
     `<div class="ticker-list" style="margin-bottom:60px">${holdingsHtml}</div>`;
 }
 
 /* ── selection & tagging ── */
+/* Tapping a sector or geography row filters the holdings below.
+   Tapping the same one again clears it. */
+function togglePortSector(s){
+  state.portSectorFilter = state.portSectorFilter===s ? null : s;
+  state.portSelected={};        // a stale selection under a new filter is confusing
+  render();
+}
+function togglePortGeo(g){
+  state.portGeoFilter = state.portGeoFilter===g ? null : g;
+  state.portSelected={};
+  render();
+}
+function clearPortFilters(){
+  state.portSectorFilter=null;
+  state.portGeoFilter=null;
+  render();
+}
+
 function enterSelectMode(){state.portSelectMode=true;state.portSelected={};render();}
 function exitSelectMode(){state.portSelectMode=false;state.portSelected={};render();}
 function togglePortSelect(sym){
@@ -2101,7 +1733,11 @@ function togglePortSelect(sym){
 function selectUntaggedHoldings(){
   state.portfolio.forEach(h=>{
     const t=state.tickerTags[h.symbol]||{};
-    if(!t.sector&&!t.geography)state.portSelected[h.symbol]=true;
+    if(t.sector||t.geography)return;
+    // Don't select rows the current filter has hidden
+    if(state.portSectorFilter&&state.portSectorFilter!=='Untagged')return;
+    if(state.portGeoFilter)return;
+    state.portSelected[h.symbol]=true;
   });
   render();
 }
@@ -2651,21 +2287,6 @@ async function pushToDrive(){
 }
 
 // Keep the batch countdown honest without re-rendering the whole app
-let batchTicker=null;
-function ensureBatchTicker(){
-  if(state.newsBatch&&!batchTicker){
-    batchTicker=setInterval(()=>{
-      if(!state.newsBatch){clearInterval(batchTicker);batchTicker=null;return;}
-      // Repaint only the progress bar — a full render on a 68-row list every
-      // second makes the whole app feel unresponsive
-      const bar=document.getElementById('batchBar');
-      if(bar)bar.outerHTML=renderBatchBar();
-    },1000);
-  }else if(!state.newsBatch&&batchTicker){
-    clearInterval(batchTicker);batchTicker=null;
-  }
-}
-
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
 render();
 // Set initial sync badge state based on persisted OAuth
