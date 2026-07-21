@@ -249,7 +249,7 @@ let state={
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   newsBatch:null,newsAskWindow:null,
-  geminiTest:null,geminiModel:null,
+  geminiTest:null,geminiModel:null,geminiModels:[],geminiModelsAt:null,modelsLoading:false,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -266,7 +266,7 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
-      state.geminiModel=s.geminiModel||null;
+      state.geminiModel=s.geminiModel||null;state.geminiModels=s.geminiModels||[];state.geminiModelsAt=s.geminiModelsAt||null;
 
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
@@ -281,7 +281,7 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
-    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,
+    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,
 
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
@@ -770,20 +770,39 @@ function prefillNewMemo(ticker){
    day and no more than about 5 per minute. The app no longer pretends to
    track that — it simply reports what Google says. */
 
-/* Model IDs die without warning — Google deprecated gemini-2.0-flash in June
-   2026 and pulled gemini-2.5-flash early, ahead of its stated October date.
-   So this is a setting, not a constant. If you get a 404 saying the model is
-   no longer available, pick another from the list in the Gemini panel. */
-const GEMINI_MODEL_OPTIONS=[
-  {id:'gemini-3-flash',        label:'3 Flash',        note:'Current default'},
-  {id:'gemini-3.5-flash',      label:'3.5 Flash',      note:'Newer, no shutdown date announced'},
-  {id:'gemini-3.1-flash-lite', label:'3.1 Flash Lite', note:'Higher rate limits, lighter reasoning'},
-  {id:'gemini-2.5-flash-lite', label:'2.5 Flash Lite', note:'Fallback'},
-];
-const DEFAULT_GEMINI_MODEL='gemini-3-flash';
-function geminiModel(){ return state.geminiModel||DEFAULT_GEMINI_MODEL; }
+/* Model IDs die without warning and I cannot know which ones your key can
+   call. So the app asks Google directly — ListModels returns exactly what is
+   available to this key, right now. No hardcoded names, no guessing. */
+const GEMINI_ENDPOINT_BASE='https://generativelanguage.googleapis.com/v1beta';
 
-const GEMINI_ENDPOINT='https://generativelanguage.googleapis.com/v1beta/models';
+function geminiModel(){ return state.geminiModel||null; }
+
+async function listGeminiModels(){
+  if(!state.geminiKey)throw new Error('No API key');
+  const res=await fetch(`${GEMINI_ENDPOINT_BASE}/models`,{
+    headers:{'x-goog-api-key':state.geminiKey}
+  });
+  if(!res.ok){
+    const e=await res.json().catch(()=>({}));
+    throw new Error(e?.error?.message||`HTTP ${res.status}`);
+  }
+  const data=await res.json();
+  const models=(data.models||[])
+    .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+    .map(m=>({id:(m.name||'').replace(/^models\//,''), label:m.displayName||''}))
+    .filter(m=>m.id&&!/embedding|aqa|tts|image|audio|veo|imagen|gemma|robotics/i.test(m.id));
+
+  state.geminiModels=models;
+  state.geminiModelsAt=new Date().toISOString();
+  // If nothing is chosen, or the choice has been retired, take the first
+  if(models.length&&!models.find(m=>m.id===state.geminiModel)){
+    state.geminiModel=models[0].id;
+  }
+  save();
+  return models;
+}
+
+const GEMINI_ENDPOINT=GEMINI_ENDPOINT_BASE+'/models';
 
 // Minimum gap between requests. The free tier allows ~5/min; 15s is safe.
 const MIN_REQUEST_GAP_MS=15000;
@@ -934,6 +953,7 @@ Order items newest first. Set "material" to false for routine filings that chang
    Errors are surfaced verbatim: whatever Google says is what you see. */
 async function fetchNewsFor(symbol,winKey){
   if(!state.geminiKey)throw new Error('No Gemini API key set');
+  if(!geminiModel())throw new Error('No model selected — open settings and tap "Find models"');
   const win=winKey||state.newsWindow;
   const ctx=tickerContext(symbol);
   const prompt=buildNewsPrompt(ctx,win);
@@ -1207,23 +1227,30 @@ function openGeminiSetup(){
         <input class="field-input" id="geminiKeyInput" type="password" placeholder="AQ.… or AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
       </div>
       <div class="field-row">
-        <div class="field-label">Model</div>
-        <div style="display:flex;flex-direction:column;gap:5px">
-          ${GEMINI_MODEL_OPTIONS.map(m=>{
-            const sel=geminiModel()===m.id;
-            return `<div onclick="setGeminiModel('${m.id}')" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
-              <div style="min-width:0">
-                <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'}">${m.label}</div>
-                <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">${m.id} · ${m.note}</div>
+        <div class="field-label">Model ${state.geminiModels.length?`<span style="opacity:.5">— ${state.geminiModels.length} available</span>`:''}</div>
+        ${state.modelsLoading
+          ? `<div class="news-config"><span class="dot pulse" style="background:var(--accent)"></span> Asking Google which models this key can use…</div>`
+          : (!state.geminiModels.length
+            ? `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt)">
+                 No model list yet. Tap <strong>Find models</strong> below — the app will
+                 ask Google what this key can actually call, rather than guessing.
+               </div>`
+            : `<div style="display:flex;flex-direction:column;gap:5px;max-height:200px;overflow-y:auto">
+                ${state.geminiModels.map(m=>{
+                  const sel=geminiModel()===m.id;
+                  return `<div onclick="setGeminiModel('${m.id}')" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
+                    <div style="min-width:0">
+                      <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.label||m.id}</div>
+                      <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.id}</div>
+                    </div>
+                    ${sel?'<span style="color:var(--accent);flex-shrink:0">✓</span>':''}
+                  </div>`;
+                }).join('')}
               </div>
-              ${sel?'<span style="color:var(--accent);flex-shrink:0">✓</span>':''}
-            </div>`;
-          }).join('')}
-        </div>
-        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5;margin-top:6px">
-          Google retires models without much warning. A 404 saying the model is
-          gone means pick another here.
-        </div>
+              <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-top:6px">
+                From Google's ListModels. ${state.geminiModelsAt?`Checked ${fmtDateRelative(state.geminiModelsAt)}.`:''}
+              </div>`)
+        }
       </div>
       ${testBlock}
       <div class="news-config" style="margin-bottom:12px;line-height:1.6">
@@ -1240,12 +1267,29 @@ function openGeminiSetup(){
       </div>
       <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
         ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
+        <button class="btn btn-ghost" onclick="findModels()">Find models</button>
         <button class="btn btn-ghost" onclick="testGeminiKey()">Test</button>
         <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
       </div>
     </div>
   </div>`;
   setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
+}
+
+async function findModels(){
+  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
+  if(typed)state.geminiKey=typed;
+  if(!state.geminiKey){showToast('Enter a key first');return;}
+  state.modelsLoading=true;state.geminiTest=null;openGeminiSetup();
+  try{
+    const models=await listGeminiModels();
+    state.modelsLoading=false;openGeminiSetup();
+    showToast(models.length?`Found ${models.length} — using ${geminiModel()}`:'No usable models returned');
+  }catch(e){
+    state.modelsLoading=false;
+    state.geminiTest={status:'ListModels failed',detail:e.message};
+    openGeminiSetup();
+  }
 }
 
 function setGeminiModel(m){
@@ -1264,6 +1308,7 @@ async function testGeminiKey(){
   if(!key){showToast('Enter a key first');return;}
   if(typed)state.geminiKey=typed;
 
+  if(!geminiModel()){showToast('Tap "Find models" first');return;}
   state.geminiTest={status:'testing'};save();openGeminiSetup();
   try{
     const res=await fetch(`${GEMINI_ENDPOINT}/${geminiModel()}:generateContent`,{
@@ -1356,7 +1401,7 @@ function renderNews(){
   </div>`;
 
   const note=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">
-    ${geminiModel()} · free tier allows ~20 grounded requests/day
+    ${geminiModel()||'no model selected'} · free tier allows ~20 grounded requests/day
   </div>`;
 
   const summary=cached?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${cached} of ${universe.length} checked · ${materialCount} material item${materialCount===1?'':'s'}</div>`:'';
