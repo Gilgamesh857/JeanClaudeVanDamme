@@ -249,7 +249,7 @@ let state={
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   newsBatch:null,newsAskWindow:null,
-  geminiTest:null,
+  geminiTest:null,geminiModel:null,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -266,6 +266,7 @@ function load(){
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
+      state.geminiModel=s.geminiModel||null;
 
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
@@ -280,7 +281,7 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
-    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,
+    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,
 
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
@@ -769,7 +770,19 @@ function prefillNewMemo(ticker){
    day and no more than about 5 per minute. The app no longer pretends to
    track that — it simply reports what Google says. */
 
-const GEMINI_MODEL='gemini-2.5-flash';   // named model from Cloud Console quotas
+/* Model IDs die without warning — Google deprecated gemini-2.0-flash in June
+   2026 and pulled gemini-2.5-flash early, ahead of its stated October date.
+   So this is a setting, not a constant. If you get a 404 saying the model is
+   no longer available, pick another from the list in the Gemini panel. */
+const GEMINI_MODEL_OPTIONS=[
+  {id:'gemini-3-flash',        label:'3 Flash',        note:'Current default'},
+  {id:'gemini-3.5-flash',      label:'3.5 Flash',      note:'Newer, no shutdown date announced'},
+  {id:'gemini-3.1-flash-lite', label:'3.1 Flash Lite', note:'Higher rate limits, lighter reasoning'},
+  {id:'gemini-2.5-flash-lite', label:'2.5 Flash Lite', note:'Fallback'},
+];
+const DEFAULT_GEMINI_MODEL='gemini-3-flash';
+function geminiModel(){ return state.geminiModel||DEFAULT_GEMINI_MODEL; }
+
 const GEMINI_ENDPOINT='https://generativelanguage.googleapis.com/v1beta/models';
 
 // Minimum gap between requests. The free tier allows ~5/min; 15s is safe.
@@ -927,7 +940,7 @@ async function fetchNewsFor(symbol,winKey){
 
   lastRequestAt=Date.now();
 
-  const res=await fetch(`${GEMINI_ENDPOINT}/${GEMINI_MODEL}:generateContent`,{
+  const res=await fetch(`${GEMINI_ENDPOINT}/${geminiModel()}:generateContent`,{
     method:'POST',
     headers:{
       'Content-Type':'application/json',
@@ -1166,6 +1179,139 @@ function clearNewsErrors(){
 function setNewsWindow(w){ if(NEWS_WINDOWS[w]){state.newsWindow=w;save();render();} }
 function setAskWindow(w){ if(NEWS_WINDOWS[w]){state.newsAskWindow=w;render();} }
 
+/* ── Gemini settings ── */
+function openGeminiSetup(){
+  const root=document.getElementById('modalRoot');
+  const has=!!state.geminiKey;
+  const t=state.geminiTest;
+
+  const testBlock=(()=>{
+    if(!t)return '';
+    if(t.status==='testing')return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Testing…</div>`;
+    if(t.status==='ok')return `<div class="news-config" style="background:var(--accent2);color:var(--accent);margin-bottom:12px"><strong>Working</strong><br>${t.detail}</div>`;
+    return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px">
+      <strong>${t.status==='network'?'Network error':'HTTP '+t.status}</strong> — Google's response:<br>
+      <span style="font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-word">${t.detail}</span>
+    </div>`;
+  })();
+
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Gemini</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
+        News digests use Gemini with Search grounding.<br>
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Get a free key at AI Studio →</a>
+      </div>
+      <div class="field-row">
+        <div class="field-label">API key</div>
+        <input class="field-input" id="geminiKeyInput" type="password" placeholder="AQ.… or AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
+      </div>
+      <div class="field-row">
+        <div class="field-label">Model</div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          ${GEMINI_MODEL_OPTIONS.map(m=>{
+            const sel=geminiModel()===m.id;
+            return `<div onclick="setGeminiModel('${m.id}')" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
+              <div style="min-width:0">
+                <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'}">${m.label}</div>
+                <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">${m.id} · ${m.note}</div>
+              </div>
+              ${sel?'<span style="color:var(--accent);flex-shrink:0">✓</span>':''}
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.5;margin-top:6px">
+          Google retires models without much warning. A 404 saying the model is
+          gone means pick another here.
+        </div>
+      </div>
+      ${testBlock}
+      <div class="news-config" style="margin-bottom:12px;line-height:1.6">
+        <strong>On rate limits</strong><br>
+        Requests using Search grounding are counted against the free tier's
+        generate-content quota — roughly <strong>20 per day</strong> and
+        <strong>5 per minute</strong> — not the larger grounding quota shown in
+        Cloud Console. So you can see plenty of quota remaining and still be
+        refused. Requests are paced ${MIN_REQUEST_GAP_MS/1000}s apart and Google's
+        own message is shown verbatim.
+      </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
+        Stored in this browser only. Never sent anywhere but Google.
+      </div>
+      <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
+        ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
+        <button class="btn btn-ghost" onclick="testGeminiKey()">Test</button>
+        <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
+      </div>
+    </div>
+  </div>`;
+  setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
+}
+
+function setGeminiModel(m){
+  const key=document.getElementById('geminiKeyInput')?.value?.trim();
+  if(key)state.geminiKey=key;          // don't lose a key being typed
+  state.geminiModel=m;
+  state.geminiTest=null;               // a past result says nothing about a new model
+  save();openGeminiSetup();
+}
+
+/* One tiny request, no grounding — separates "is the key good?" from
+   "is the grounded quota exhausted?". */
+async function testGeminiKey(){
+  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
+  const key=typed||state.geminiKey;
+  if(!key){showToast('Enter a key first');return;}
+  if(typed)state.geminiKey=typed;
+
+  state.geminiTest={status:'testing'};save();openGeminiSetup();
+  try{
+    const res=await fetch(`${GEMINI_ENDPOINT}/${geminiModel()}:generateContent`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({
+        contents:[{parts:[{text:'Reply with the single word: OK'}]}],
+        generationConfig:{maxOutputTokens:10},
+      })
+    });
+    if(res.ok){
+      state.geminiTest={status:'ok',detail:`${geminiModel()} responded. Note this test does not use Search grounding, which has tighter limits.`};
+    }else{
+      let raw='';
+      try{
+        const body=await res.json();
+        raw=body?.error?.message||JSON.stringify(body);
+        const d=body?.error?.details;
+        if(Array.isArray(d)){
+          const q=d.find(x=>(x['@type']||'').includes('QuotaFailure'));
+          if(q&&q.violations&&q.violations.length){
+            const v=q.violations[0];
+            if(v.quotaMetric)raw+=`\n\nQuota metric: ${v.quotaMetric}`;
+            if(v.quotaId)raw+=`\nQuota id: ${v.quotaId}`;
+            if(v.quotaValue)raw+=`\nLimit: ${v.quotaValue}`;
+          }
+          const r=d.find(x=>(x['@type']||'').includes('RetryInfo'));
+          if(r&&r.retryDelay)raw+=`\nRetry after ${r.retryDelay}`;
+        }
+      }catch(_){ raw=`HTTP ${res.status}`; }
+      state.geminiTest={status:res.status,detail:raw};
+    }
+  }catch(err){
+    state.geminiTest={status:'network',detail:err.message};
+  }
+  save();openGeminiSetup();
+}
+
+function saveGeminiKey(){
+  const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
+  if(!k){showToast('Enter a key');return;}
+  state.geminiKey=k;state.geminiTest=null;save();closeModal();render();showToast('Key saved');
+}
+function clearGeminiKey(){
+  if(!confirm('Remove the Gemini key? Cached digests are kept.'))return;
+  state.geminiKey=null;state.geminiTest=null;save();closeModal();render();showToast('Key removed');
+}
+
 /* ── News tab ── */
 function renderNews(){
   if(!state.geminiKey){
@@ -1210,7 +1356,7 @@ function renderNews(){
   </div>`;
 
   const note=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">
-    ${GEMINI_MODEL} · free tier allows ~20 grounded requests/day
+    ${geminiModel()} · free tier allows ~20 grounded requests/day
   </div>`;
 
   const summary=cached?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${cached} of ${universe.length} checked · ${materialCount} material item${materialCount===1?'':'s'}</div>`:'';
