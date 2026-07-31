@@ -238,6 +238,81 @@
 <script>
 const STORAGE_KEY='invest_diary_v2';
 const MEMO_SECTIONS=['thesis','risks','catalysts','management','funding','valuation','technicals','reasons_to_sell','description'];
+
+/* Parse a fuzzy timing phrase into a sortable anchor date.
+   "Q3 2026", "Sept 2026", "H2 2026", "2026", "mid 2026", "2026-09" all work.
+   Anchor is the END of the stated period so "due by Q3" sorts sensibly.
+   Unparseable text is still stored — just not placed on the timeline. */
+/* Parse a fuzzy timing phrase, including RANGES, into sortable anchors.
+   Single: "Q3 2026", "Sept 2026", "mid 2026", "2026-09", "2026".
+   Range:  "Q3-Q4 2026", "Q3 2026 to Q1 2027", "H2 2026", "Sept-Nov 2026".
+   Returns {start, end, label} where start/end are 'YYYY-MM-DD', or null.
+   For a single point, start===end. Timeline sorts on start so it's seen coming. */
+function parseCatalystTiming(raw){
+  if(!raw)return null;
+  const s=raw.trim().toLowerCase();
+
+  // A lone ISO date must not be split on its own hyphen
+  if(/^20\d{2}-\d{1,2}(-\d{1,2})?$/.test(s)){
+    const one=parseOnePoint(s,'');
+    return one?{start:one.start,end:one.end,label:raw.trim()}:null;
+  }
+
+  // Split on range separators into at most two halves
+  const parts=s.split(/\s*(?:-|–|—|to|through|thru|until|till)\s*/).filter(Boolean);
+
+  if(parts.length>=2){
+    const a=parseOnePoint(parts[0], parts[1]);
+    const b=parseOnePoint(parts[1], parts[0]);
+    if(a&&b){
+      const start=a.start<b.start?a.start:b.start;
+      const end=a.end>b.end?a.end:b.end;
+      return {start, end, label:raw.trim()};
+    }
+    // one half parsed — treat as single
+    const only=a||b;
+    if(only)return {start:only.start, end:only.end, label:raw.trim()};
+  }
+
+  const one=parseOnePoint(s, '');
+  return one?{start:one.start, end:one.end, label:raw.trim()}:null;
+}
+
+/* Parse a single period. `sibling` lets "Q3-Q4 2026" borrow the year that
+   only appears on the other half. Returns {start,end} spanning the period. */
+function parseOnePoint(s, sibling){
+  const endOfMonth=(y,m)=>`${y}-${String(m).padStart(2,'0')}-${String(new Date(y,m,0).getDate()).padStart(2,'0')}`;
+  const startOfMonth=(y,m)=>`${y}-${String(m).padStart(2,'0')}-01`;
+
+  const yearIn=(t)=>{ const m=(t||'').match(/(20\d{2})/); return m?parseInt(m[1]):null; };
+  let year=yearIn(s)||yearIn(sibling);
+  const now=new Date();
+
+  // ISO YYYY-MM
+  const iso=s.match(/(20\d{2})-(\d{1,2})/);
+  if(iso){ const y=parseInt(iso[1]),m=parseInt(iso[2]); return {start:startOfMonth(y,m),end:endOfMonth(y,m)}; }
+
+  const months={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12,
+    january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
+
+  const q=s.match(/q([1-4])/);
+  if(q){ const y=year||now.getFullYear(); const m=parseInt(q[1])*3; return {start:startOfMonth(y,m-2),end:endOfMonth(y,m)}; }
+
+  const h=s.match(/h([12])/);
+  if(h){ const y=year||now.getFullYear(); return h[1]==='1'?{start:startOfMonth(y,1),end:endOfMonth(y,6)}:{start:startOfMonth(y,7),end:endOfMonth(y,12)}; }
+
+  for(const name of Object.keys(months).sort((a,b)=>b.length-a.length)){
+    if(new RegExp('\\b'+name).test(s)){ const y=year||now.getFullYear(); const m=months[name]; return {start:startOfMonth(y,m),end:endOfMonth(y,m)}; }
+  }
+
+  if(year){
+    if(/\bend\b|\blate\b/.test(s))     return {start:startOfMonth(year,10),end:endOfMonth(year,12)};
+    if(/\bmid\b/.test(s))              return {start:startOfMonth(year,5), end:endOfMonth(year,8)};
+    if(/\bearly\b|\bstart\b/.test(s))  return {start:startOfMonth(year,1), end:endOfMonth(year,3)};
+    return {start:startOfMonth(year,1), end:endOfMonth(year,12)};
+  }
+  return null;
+}
 const SECTION_LABELS={thesis:'Investment Thesis',risks:'Risks',catalysts:'Catalysts',management:'Management & Shareholders',funding:'Funding',valuation:'Valuation',technicals:'Technicals',reasons_to_sell:'Reasons to Sell',description:'Description'};
 
 let state={
@@ -245,11 +320,11 @@ let state={
   driveFileId:null,driveSynced:false,driveToken:null,
   sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
   tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
-  portSectorFilter:null,portGeoFilter:null,
+  portSectorFilter:null,portGeoFilter:null,portView:'holdings',portSort:'weight',
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
   newsBatch:null,newsAskWindow:null,
-  geminiTest:null,geminiModel:null,geminiModels:[],geminiModelsAt:null,modelsLoading:false,
+  geminiTest:null,geminiModel:null,geminiModels:[],geminiModelsAt:null,modelsLoading:false,groundingOff:false,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
   activeMemoId:null
@@ -265,8 +340,16 @@ function load(){
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
+      // Migrate any catalysts stored under the old single-anchor shape
+      (s.memos||[]).forEach(m=>{
+        if(m.mgmt>3)m.mgmt=3;   // legacy 5-star ratings clamp to the new 3-star scale
+        (m.catalysts||[]).forEach(cat=>{
+          if(cat.anchor&&!cat.start){cat.start=cat.anchor;cat.end=cat.anchor;delete cat.anchor;}
+        });
+      });
       state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
       state.geminiModel=s.geminiModel||null;state.geminiModels=s.geminiModels||[];state.geminiModelsAt=s.geminiModelsAt||null;
+      state.groundingOff=!!s.groundingOff;
 
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
@@ -281,7 +364,7 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
-    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,
+    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,groundingOff:state.groundingOff,
 
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
@@ -438,12 +521,88 @@ function renderMemosTab(el){
     return;
   }
   const sorted=[...state.memos].sort((a,b)=>(b.updatedAt||b.createdAt||'').localeCompare(a.updatedAt||a.createdAt||''));
-  el.innerHTML=`<div class="memo-list">${sorted.map(m=>renderMemoCard(m)).join('')}</div>`;
+  const exportBar=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+    <button class="btn btn-ghost btn-sm" onclick="exportAll('csv')">⬇ Export CSV</button>
+    <button class="btn btn-ghost btn-sm" onclick="exportAll('json')">⬇ Export JSON (full backup)</button>
+  </div>`;
+  el.innerHTML=exportBar+`<div class="memo-list">${sorted.map(m=>renderMemoCard(m)).join('')}</div>`;
+}
+
+/* ── Backup export ──────────────────────────────────────────────────
+   Independent of the app's data model, so nothing I break later can lose
+   your writing. CSV for reading anywhere; JSON for a complete restore. */
+function csvCell(v){
+  const s=(v==null?'':String(v));
+  // Always quote; double any embedded quotes. Excel-safe.
+  return '"'+s.replace(/"/g,'""')+'"';
+}
+function exportAll(format){
+  const stamp=new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+
+  if(format==='json'){
+    // Complete, restorable snapshot of everything you've written
+    const payload={
+      exportedAt:new Date().toISOString(),
+      version:'invest-diary-v2',
+      memos:state.memos,
+      entries:state.entries,
+      tickerTags:state.tickerTags,
+      portfolio:state.portfolio,
+      portfolioMeta:state.portfolioMeta,
+    };
+    downloadFile(`invest-diary-backup-${stamp}.json`, JSON.stringify(payload,null,2), 'application/json');
+    showToast('Full backup downloaded');
+    return;
+  }
+
+  // CSV: one row per memo, every field flattened, plus a second file-worth
+  // of log rows appended under a divider so a single file has everything.
+  const secCols=MEMO_SECTIONS;
+  const memoHeader=['type','ticker','name','conviction','mgmt_rating','catalyst_events','created','updated',...secCols.map(s=>'section_'+s)];
+  const rows=[memoHeader.map(csvCell).join(',')];
+
+  state.memos.forEach(m=>{
+    const catStr=(m.catalysts||[]).map(x=>`${x.text} [${x.timing||'no date'}${x.done?', done':''}]`).join(' | ');
+    const row=[
+      'memo', m.ticker, m.name||'', m.conviction||'', m.mgmt||'', catStr,
+      m.createdAt||'', m.updatedAt||'',
+      ...secCols.map(s=>(m.sections&&m.sections[s])||'')
+    ];
+    rows.push(row.map(csvCell).join(','));
+  });
+
+  // Blank line, then logs with their own header
+  rows.push('');
+  rows.push(['type','timestamp','tickers','tags','text'].map(csvCell).join(','));
+  [...state.entries]
+    .sort((a,b)=>new Date(a.ts)-new Date(b.ts))
+    .forEach(e=>{
+      rows.push([
+        'log', e.ts,
+        (e.tickers||[]).join(' '),
+        (e.hashes||[]).join(' '),
+        e.text||''
+      ].map(csvCell).join(','));
+    });
+
+  downloadFile(`invest-diary-${stamp}.csv`, rows.join(String.fromCharCode(13,10)), 'text/csv');
+  showToast(`Exported ${state.memos.length} memos, ${state.entries.length} logs`);
+}
+
+function downloadFile(filename, content, mime){
+  const blob=new Blob([content],{type:mime+';charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
 function renderMemoCard(m){
   const cv=m.conviction||0;
   const cvBadge=cv?`<span class="conviction-badge conviction-${cv}">${'●'.repeat(cv)} ${convictionLabel(cv)}</span>`:'<span class="conviction-badge" style="background:var(--surface3);color:var(--ink3)">No conviction set</span>';
+  const mgmtBadge=m.mgmt?`<span class="conviction-badge" style="background:var(--conviction-2);color:var(--conviction-2t)"><span style="letter-spacing:1px">${'★'.repeat(m.mgmt)}</span></span>`:'';
   const filledSections=MEMO_SECTIONS.filter(s=>m.sections&&m.sections[s]&&m.sections[s].trim());
   const pips=filledSections.slice(0,4).map(s=>`<span class="memo-section-pip">${SECTION_LABELS[s].split(' ')[0]}</span>`).join('');
   const snippet=filledSections.length?m.sections[filledSections[0]].slice(0,120):'';
@@ -453,7 +612,7 @@ function renderMemoCard(m){
         <div class="memo-ticker">${m.ticker}</div>
         ${m.name?`<div class="memo-name">${m.name}</div>`:''}
       </div>
-      ${cvBadge}
+      <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">${cvBadge}${mgmtBadge}</div>
     </div>
     ${snippet?`<div class="memo-snippet">${snippet}</div>`:''}
     <div class="memo-card-footer">
@@ -497,6 +656,7 @@ function renderMemoView(el){
       ${memo.name?`<div class="memo-view-name">${memo.name}</div>`:''}
       <div class="memo-view-meta">
         <span onclick="openConvictionPicker('${memo.id}')" style="cursor:pointer">${cvBadge}</span>
+        <span onclick="openMgmtPicker('${memo.id}')" style="cursor:pointer" title="Management & Shareholders">${renderMgmtStars(memo.mgmt||0)}</span>
         ${memo.updatedAt?`<span style="font-size:11px;font-family:var(--font-mono);color:var(--ink3)">Reviewed ${fmtDateRelative(memo.updatedAt)}</span>`:''}
       </div>
     </div>
@@ -512,6 +672,7 @@ function renderMemoView(el){
 }
 
 function renderMemoSection(memo,sectionKey){
+  if(sectionKey==='catalysts')return renderCatalystSection(memo);
   const label=SECTION_LABELS[sectionKey];
   const content=memo.sections?.[sectionKey]||'';
   const editingKey=`editing_${memo.id}_${sectionKey}`;
@@ -535,6 +696,89 @@ function renderMemoSection(memo,sectionKey){
       }
     </div>
   </div>`;
+}
+
+function renderCatalystSection(memo){
+  const cats=memo.catalysts||[];
+  const rows=cats.map((cat,i)=>{
+    const parsed=cat.start?fmtCatalystRange(cat.start,cat.end):'';
+    const overdue=cat.end&&!cat.done&&new Date(cat.end)<new Date();
+    return `<div class="memo-section" style="border:1px solid var(--border2);border-radius:var(--r);padding:10px 12px;margin-bottom:8px;${cat.done?'opacity:.55;':''}">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <div onclick="toggleCatalystDone('${memo.id}',${i})" style="width:18px;height:18px;border-radius:5px;border:2px solid ${cat.done?'var(--accent)':'var(--border2)'};background:${cat.done?'var(--accent)':'transparent'};color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;flex-shrink:0;margin-top:2px">${cat.done?'✓':''}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;line-height:1.4;color:var(--ink);${cat.done?'text-decoration:line-through':''}">${cat.text||''}</div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">
+            ${cat.timing?`<span style="font-family:var(--font-mono);font-size:11px;padding:2px 8px;border-radius:10px;background:${overdue?'var(--warn-bg)':'var(--accent2)'};color:${overdue?'var(--warn-txt)':'var(--accent)'}">${cat.timing}${overdue?' · overdue':''}</span>`:'<span style="font-family:var(--font-mono);font-size:11px;color:var(--ink3)">no date</span>'}
+          </div>
+        </div>
+        <button class="icon-btn" onclick="removeCatalyst('${memo.id}',${i})" style="flex-shrink:0">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  const label=SECTION_LABELS['catalysts'];
+  return `<div class="memo-section" id="msec-${memo.id}-catalysts">
+    <div class="memo-section-head" onclick="toggleMemoSection('${memo.id}','catalysts')">
+      <span class="memo-section-label">${label}${cats.length?` · ${cats.filter(x=>!x.done).length} pending`:''}</span>
+      <span class="memo-section-chevron open" id="chev-${memo.id}-catalysts">▼</span>
+    </div>
+    <div class="memo-section-content" id="msc-${memo.id}-catalysts">
+      ${rows||'<div style="font-size:13px;color:var(--ink3);margin-bottom:8px">No catalysts yet. Add expected events with rough timing, and they\'ll appear on the portfolio timeline.</div>'}
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <input class="field-input" id="newCatText-${memo.id}" placeholder="e.g. Maiden resource estimate" style="flex:2">
+        <input class="field-input" id="newCatTiming-${memo.id}" placeholder="Q3 2026" style="flex:1;font-family:var(--font-mono)">
+        <button class="btn btn-primary btn-sm" onclick="addCatalyst('${memo.id}')">Add</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function fmtCatalystDate(d){
+  return new Date(d).toLocaleDateString('en-GB',{month:'short',year:'numeric'});
+}
+function fmtCatalystRange(start,end){
+  if(!start)return '';
+  if(!end||start===end)return fmtCatalystDate(start);
+  const a=fmtCatalystDate(start), b=fmtCatalystDate(end);
+  return a===b?a:`${a} – ${b}`;
+}
+
+function addCatalyst(memoId){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  const text=(document.getElementById('newCatText-'+memoId)?.value||'').trim();
+  const timing=(document.getElementById('newCatTiming-'+memoId)?.value||'').trim();
+  if(!text){showToast('Describe the catalyst');return;}
+  const parsed=parseCatalystTiming(timing);
+  if(!memo.catalysts)memo.catalysts=[];
+  memo.catalysts.push({
+    text, timing,
+    start: parsed?parsed.start:null,
+    end:   parsed?parsed.end:null,
+    done:false,
+    addedAt:new Date().toISOString(),
+  });
+  memo.updatedAt=new Date().toISOString();
+  save();renderMemoView(document.getElementById('mainContent'));
+  showToast(parsed?`Added — ${fmtCatalystRange(parsed.start,parsed.end)}`:'Added (timing not recognised)');
+  if(state.driveSynced)scheduleDriveSync();
+}
+function removeCatalyst(memoId,i){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo||!memo.catalysts)return;
+  memo.catalysts.splice(i,1);
+  memo.updatedAt=new Date().toISOString();
+  save();renderMemoView(document.getElementById('mainContent'));
+  if(state.driveSynced)scheduleDriveSync();
+}
+function toggleCatalystDone(memoId,i){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo||!memo.catalysts||!memo.catalysts[i])return;
+  memo.catalysts[i].done=!memo.catalysts[i].done;
+  memo.updatedAt=new Date().toISOString();
+  save();renderMemoView(document.getElementById('mainContent'));
+  if(state.driveSynced)scheduleDriveSync();
 }
 
 function toggleMemoSection(memoId,sectionKey){
@@ -571,6 +815,40 @@ function saveSectionEdit(memoId,sectionKey){
   save();
   showToast('Section saved');
   renderMemoView(document.getElementById('mainContent'));
+  if(state.driveSynced)scheduleDriveSync();
+}
+
+function renderMgmtStars(n){
+  const full='★'.repeat(n), empty='☆'.repeat(3-n);
+  return `<span class="conviction-badge" style="background:${n?'var(--conviction-2)':'var(--surface3)'};color:${n?'var(--conviction-2t)':'var(--ink3)'}">
+    <span style="letter-spacing:1px">${full}${empty}</span>${n?'':' Mgmt'}
+  </span>`;
+}
+function openMgmtPicker(memoId){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  const cur=memo.mgmt||0;
+  const stars=[1,2,3].map(n=>`<div onclick="setMgmt('${memoId}',${n})" style="cursor:pointer;font-size:32px;color:${n<=cur?'var(--conviction-2t)':'var(--border2)'};transition:color .1s">★</div>`).join('');
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Management & Shareholders — ${memo.ticker}</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="margin-bottom:14px;font-size:13px;color:var(--ink2);line-height:1.6">
+        Your read on management quality and the shareholder register — insider alignment, track record, capital discipline, register quality.
+      </div>
+      <div style="display:flex;gap:8px;justify-content:center;margin-bottom:8px">${stars}</div>
+      <div style="text-align:center;font-size:12px;font-family:var(--font-mono);color:var(--ink3)">${cur?cur+' / 3':'not rated'}</div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="setMgmt('${memoId}',0)">Clear</button><button class="btn btn-ghost" onclick="closeModal()">Done</button></div>
+    </div>
+  </div>`;
+}
+function setMgmt(memoId,n){
+  const memo=state.memos.find(m=>m.id===memoId);
+  if(!memo)return;
+  memo.mgmt=Math.min(3,n);memo.updatedAt=new Date().toISOString();
+  save();closeModal();
+  renderMemoView(document.getElementById('mainContent'));
+  showToast('Management rating updated');
   if(state.driveSynced)scheduleDriveSync();
 }
 
@@ -631,7 +909,7 @@ function createMemo(){
   MEMO_SECTIONS.forEach(s=>{sections[s]='';});
   const memo={
     id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
-    ticker,name,conviction:0,sections,
+    ticker,name,conviction:0,mgmt:0,sections,catalysts:[],
     createdAt:new Date().toISOString(),updatedAt:null
   };
   state.memos.push(memo);
@@ -968,7 +1246,10 @@ async function fetchNewsFor(symbol,winKey){
     },
     body:JSON.stringify({
       contents:[{parts:[{text:prompt}]}],
-      tools:[{google_search:{}}],
+      // Grounding can be disabled to isolate whether it is what triggers a 429.
+      // Without it the model cannot search and will answer from training data —
+      // useless for real news, but a clean diagnostic.
+      ...(state.groundingOff?{}:{tools:[{google_search:{}}]}),
       generationConfig:{temperature:0.2},
     })
   });
@@ -1030,6 +1311,7 @@ async function fetchNewsFor(symbol,winKey){
     sources,
     hadMemo:!!(ctx.thesis||ctx.risks||ctx.catalysts),
     window:win,
+    ungrounded:!!state.groundingOff,
     fetchedAt:new Date().toISOString(),
   };
 }
@@ -1253,6 +1535,20 @@ function openGeminiSetup(){
         }
       </div>
       ${testBlock}
+      <div class="field-row">
+        <div class="field-label">Diagnostic</div>
+        <div onclick="toggleGrounding()" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-radius:var(--r);border:1px solid ${state.groundingOff?'var(--danger)':'var(--border2)'};background:${state.groundingOff?'var(--warn-bg)':'transparent'};cursor:pointer">
+          <div style="min-width:0">
+            <div style="font-size:13px;font-weight:500;color:${state.groundingOff?'var(--warn-txt)':'var(--ink)'}">Search grounding ${state.groundingOff?'OFF':'on'}</div>
+            <div style="font-size:11px;color:var(--ink3);line-height:1.4">${state.groundingOff
+              ? 'Digests will be worthless — the model cannot search. Use only to test whether grounding is what causes a 429.'
+              : 'Normal. Turn off only to diagnose rate-limit errors.'}</div>
+          </div>
+          <div style="width:38px;height:22px;border-radius:11px;background:${state.groundingOff?'var(--danger)':'var(--accent)'};position:relative;flex-shrink:0">
+            <div style="width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:2px;left:${state.groundingOff?'2px':'18px'};transition:left .15s"></div>
+          </div>
+        </div>
+      </div>
       <div class="news-config" style="margin-bottom:12px;line-height:1.6">
         <strong>On rate limits</strong><br>
         Requests using Search grounding are counted against the free tier's
@@ -1290,6 +1586,13 @@ async function findModels(){
     state.geminiTest={status:'ListModels failed',detail:e.message};
     openGeminiSetup();
   }
+}
+
+function toggleGrounding(){
+  state.groundingOff=!state.groundingOff;
+  const key=document.getElementById('geminiKeyInput')?.value?.trim();
+  if(key)state.geminiKey=key;
+  save();openGeminiSetup();
 }
 
 function setGeminiModel(m){
@@ -1400,9 +1703,13 @@ function renderNews(){
     <button class="btn btn-ghost btn-sm" onclick="openGeminiSetup()">⚙</button>
   </div>`;
 
-  const note=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">
-    ${geminiModel()||'no model selected'} · free tier allows ~20 grounded requests/day
-  </div>`;
+  const note=state.groundingOff
+    ? `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:10px">
+        <strong>Search grounding is OFF</strong> — results are not real news. Diagnostic mode only.
+      </div>`
+    : `<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">
+        ${geminiModel()||'no model selected'} · free tier allows ~20 grounded requests/day
+      </div>`;
 
   const summary=cached?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${cached} of ${universe.length} checked · ${materialCount} material item${materialCount===1?'':'s'}</div>`:'';
 
@@ -1503,6 +1810,7 @@ function renderNewsDetail(sym){
   const routine=items.filter(i=>i.material===false);
   const usedWindow=c.window&&NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window]:currentWindow();
 
+  const ungroundedWarn=c.ungrounded?`<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Fetched without Search grounding</strong> — the model could not search, so this is not real news. Diagnostic result only.</div>`:'';
   const overall=c.overall?`<div style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:14px">
     <div class="section-label" style="margin-bottom:6px;color:var(--accent)">The picture</div>
     <div style="font-size:14px;line-height:1.6;color:var(--ink)">${c.overall}</div>
@@ -1544,7 +1852,7 @@ function renderNewsDetail(sym){
 
   const stamp=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-align:center;margin:14px 0">Checked ${fmtDateRelative(c.fetchedAt)} over ${usedWindow.phrase}</div>`;
 
-  return header+overall+materialHtml+routineHtml+stamp+sourcesHtml;
+  return header+ungroundedWarn+overall+materialHtml+routineHtml+stamp+sourcesHtml;
 }
 
 /* ══════════════════════════════════════
@@ -1791,6 +2099,13 @@ function renderPortfolio(){
     return connectBtn+`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No portfolio data</div><div class="empty-body">Paste your broker CSV export — exactly as downloaded, no editing needed.</div></div>`;
   }
 
+  const viewToggle=`<div style="display:flex;gap:4px;margin-bottom:14px">
+    <div class="filter-chip ${state.portView!=='catalysts'?'active':''}" onclick="setPortView('holdings')">Holdings</div>
+    <div class="filter-chip ${state.portView==='catalysts'?'active':''}" onclick="setPortView('catalysts')">Catalyst timeline</div>
+  </div>`;
+
+  if(state.portView==='catalysts')return connectBtn+viewToggle+renderCatalystTimeline();
+
   // merge in tags
   const rows=p.map(h=>{const t=state.tickerTags[h.symbol]||{};return{...h,name:t.name||h.name||'',sector:t.sector||'',geography:t.geography||'',gfTicker:t.gfTicker||''};});
 
@@ -1853,12 +2168,27 @@ function renderPortfolio(){
         <button class="btn btn-ghost btn-sm" onclick="enterSelectMode()">⊞ Tag holdings${untaggedCount?` (${untaggedCount} untagged)`:''}</button>
       </div>`;
 
-  // holdings list — filtered, then sorted by weight descending
+  // holdings list — filtered, then sorted by the chosen mode
   let shown=rows;
   if(secFilter) shown=shown.filter(h=>(h.sector||'Untagged')===secFilter);
   if(geoFilter) shown=shown.filter(h=>h.geography===geoFilter);
-  const sorted=[...shown].sort((a,b)=>parseFloat(b.weight_pct||0)-parseFloat(a.weight_pct||0));
-  const maxW=parseFloat(sorted[0]?.weight_pct||1);
+
+  const byWeight=(a,b)=>parseFloat(b.weight_pct||0)-parseFloat(a.weight_pct||0);
+  let sorted;
+  if(state.portSort==='catalyst'){
+    // Holdings with a sooner catalyst first; those with none sink to the bottom
+    // but keep their weight order among themselves.
+    sorted=[...shown].sort((a,b)=>{
+      const ca=nextCatalystFor(a.symbol), cb=nextCatalystFor(b.symbol);
+      if(ca&&cb)return ca.start.localeCompare(cb.start)||byWeight(a,b);
+      if(ca)return -1;
+      if(cb)return 1;
+      return byWeight(a,b);
+    });
+  }else{
+    sorted=[...shown].sort(byWeight);
+  }
+  const maxW=Math.max(...sorted.map(h=>parseFloat(h.weight_pct||0)),0.0001);
 
   // A clear way back to everything
   const activeFilters=[secFilter,geoFilter].filter(Boolean);
@@ -1878,24 +2208,121 @@ function renderPortfolio(){
       ?`${h.sector}${h.sector&&h.geography?' · ':''}${h.geography}`
       :'<span style="color:var(--warn-txt)">untagged</span>';
     const clickAction=selMode?`togglePortSelect('${h.symbol}')`:`goToTicker('${h.symbol}')`;
+    const cat=nextCatalystFor(h.symbol);
+    const now=new Date();
+    const catLine=cat
+      ?`<div style="font-size:10px;font-family:var(--font-mono);color:${new Date(cat.end||cat.start)<now?'var(--warn-txt)':'var(--accent)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">◆ ${cat.timing||fmtCatalystRange(cat.start,cat.end)}</div>`
+      :'';
+    const subLine=state.portSort==='catalyst'
+      ? (catLine||`<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">no catalyst</div>`)
+      : `<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div>`;
     return`<div class="ticker-row" onclick="${clickAction}" style="${isSel?'border-color:var(--accent);background:var(--accent2);':''}">
       ${selMode?`<div style="width:20px;height:20px;border-radius:5px;border:2px solid ${isSel?'var(--accent)':'var(--border2)'};background:${isSel?'var(--accent)':'transparent'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;margin-right:8px;flex-shrink:0">${isSel?'✓':''}</div>`:''}
-      <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${h.symbol}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div></div>
+      <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${h.symbol}</div>${subLine}</div>
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(parseFloat(h.weight_pct||0)/maxW*100)}%"></div></div>
       <div style="text-align:right;min-width:52px"><div class="ticker-count">${wPct}%</div></div>
     </div>`;
   }).join('');
 
-  return connectBtn+syncInfo+summaryHtml+
+  const sortToggle=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+    <span class="section-label" style="margin:0">Sort</span>
+    <div style="display:flex;gap:4px">
+      <div class="filter-chip ${state.portSort!=='catalyst'?'active':''}" onclick="setPortSort('weight')">Weight</div>
+      <div class="filter-chip ${state.portSort==='catalyst'?'active':''}" onclick="setPortSort('catalyst')">Next catalyst</div>
+    </div>
+  </div>`;
+
+  return connectBtn+viewToggle+syncInfo+summaryHtml+
     `<div class="section-label">Sector</div><div class="ticker-list" style="margin-bottom:16px">${sectorHtml}</div>`+
     geoSection+
-    `<div class="section-label">Holdings (${sorted.length}${activeFilters.length?` of ${rows.length}`:''}) — by weight</div>`+
+    `<div class="section-label">Holdings (${sorted.length}${activeFilters.length?` of ${rows.length}`:''}) — by ${state.portSort==='catalyst'?'next catalyst':'weight'}</div>`+
     filterBanner+
+    sortToggle+
     tagToolbar+
     `<div class="ticker-list" style="margin-bottom:60px">${holdingsHtml}</div>`;
 }
 
 /* ── selection & tagging ── */
+function setPortView(v){state.portView=v;save();render();}
+function setPortSort(s){state.portSort=s;save();render();}
+
+/* The soonest pending catalyst for a holding — used to annotate and sort the
+   holdings list. Returns {start,end,timing,text} or null. */
+function nextCatalystFor(symbol){
+  const memo=state.memos.find(m=>m.ticker.replace(/^\$/,'')===symbol);
+  if(!memo||!memo.catalysts)return null;
+  const pending=memo.catalysts
+    .filter(c=>!c.done&&c.start)
+    .sort((a,b)=>a.start.localeCompare(b.start));
+  return pending.length?pending[0]:null;
+}
+
+/* Every catalyst across every memo, placed on a time axis and grouped by
+   the period it falls in. This is the "what is my portfolio waiting on"
+   view the catalyst timing was built for. */
+function renderCatalystTimeline(){
+  const all=[];
+  state.memos.forEach(m=>{
+    (m.catalysts||[]).forEach(cat=>{
+      if(cat.done)return;
+      const holding=state.portfolio.find(h=>h.symbol===m.ticker.replace(/^\$/,''));
+      all.push({
+        ticker:m.ticker.replace(/^\$/,''),
+        weight:holding?holding.weight_pct:0,
+        text:cat.text, timing:cat.timing, start:cat.start, end:cat.end,
+      });
+    });
+  });
+
+  if(!all.length){
+    return `<div class="empty-state"><div class="empty-icon">📅</div><div class="empty-title">No catalysts yet</div><div class="empty-body">Add expected events with timing inside your memos' Catalysts section, and they'll line up here by date.</div></div>`;
+  }
+
+  const dated=all.filter(c=>c.start).sort((a,b)=>a.start.localeCompare(b.start));
+  const undated=all.filter(c=>!c.start);
+
+  // Group by the quarter the catalyst STARTS in — so a Q3–Q4 event shows up
+  // under Q3, when you'd first start watching for it.
+  const groups={};
+  dated.forEach(c=>{
+    const d=new Date(c.start);
+    const q=Math.floor(d.getMonth()/3)+1;
+    const key=`Q${q} ${d.getFullYear()}`;
+    (groups[key]=groups[key]||[]).push(c);
+  });
+
+  const now=new Date();
+  const groupHtml=Object.entries(groups).map(([period,items])=>{
+    const anyOverdue=items.some(c=>new Date(c.end||c.start)<now);
+    const rows=items.sort((a,b)=>a.start.localeCompare(b.start)||b.weight-a.weight).map(c=>{
+      const overdue=new Date(c.end||c.start)<now;
+      const range=fmtCatalystRange(c.start,c.end);
+      return `<div class="ticker-row" onclick="goToTicker('${c.ticker}')" style="align-items:flex-start">
+        <div style="min-width:52px;flex-shrink:0">
+          <div class="ticker-name">${c.ticker}</div>
+          <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${c.weight?(c.weight*100).toFixed(1)+'%':''}</div>
+        </div>
+        <div style="flex:1;min-width:0;margin-left:4px">
+          <div style="font-size:13px;line-height:1.4;color:var(--ink)">${c.text}</div>
+          <div style="font-family:var(--font-mono);font-size:10px;color:${overdue?'var(--warn-txt)':'var(--ink3)'};margin-top:2px">${c.timing||range}${c.timing&&range&&range!==c.timing?` · ${range}`:''}${overdue?' · overdue':''}</div>
+        </div>
+      </div>`;
+    }).join('');
+    return `<div class="section-label" style="margin-top:14px;color:${anyOverdue?'var(--warn-txt)':'var(--accent)'}">${period}</div>
+      <div class="ticker-list">${rows}</div>`;
+  }).join('');
+
+  const undatedHtml=undated.length?`<div class="section-label" style="margin-top:14px;color:var(--ink3)">No timing set</div>
+    <div class="ticker-list" style="margin-bottom:60px">${undated.map(c=>`<div class="ticker-row" onclick="goToTicker('${c.ticker}')">
+      <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${c.ticker}</div></div>
+      <div style="flex:1;margin-left:4px;font-size:13px;color:var(--ink)">${c.text}${c.timing?` <span style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">(${c.timing})</span>`:''}</div>
+    </div>`).join('')}</div>`:'<div style="margin-bottom:60px"></div>';
+
+  const summary=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-align:center;margin-bottom:6px">${dated.length} upcoming · ${undated.length} undated</div>`;
+
+  return summary+groupHtml+undatedHtml;
+}
+
 /* Tapping a sector or geography row filters the holdings below.
    Tapping the same one again clears it. */
 function togglePortSector(s){
