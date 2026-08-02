@@ -53,6 +53,8 @@
   .sync-badge:hover{border-color:var(--accent);color:var(--accent)}
   .sync-badge.syncing{color:var(--accent);border-color:var(--accent3)}
   .sync-badge.error{color:var(--danger);border-color:var(--danger)}
+  .sync-badge.dirty{color:var(--warn-txt);border-color:var(--warn-txt)}
+  .sync-badge.conflict{color:var(--danger);border-color:var(--danger);background:var(--warn-bg)}
   .dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
   .dot.pulse{animation:pulse 1.4s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
@@ -319,7 +321,8 @@ let state={
   entries:[],memos:[],
   driveFileId:null,driveSynced:false,driveToken:null,
   sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
-  tickerTags:{},portSelectMode:false,portSelected:{},lastLocalChange:0,
+  tickerTags:{},portSelectMode:false,portSelected:{},
+  lastLocalChange:0,dirty:false,lastSyncedAt:null,lastSyncRemoteTime:null,lastSeenDriveModified:null,syncConflict:null,
   portSectorFilter:null,portGeoFilter:null,portView:'holdings',portSort:'weight',
   geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
@@ -340,6 +343,16 @@ function load(){
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
+      state.dirty=!!s.dirty;
+      state.lastSyncedAt=s.lastSyncedAt||null;
+      state.lastSyncRemoteTime=s.lastSyncRemoteTime||null;
+      state.lastSeenDriveModified=s.lastSeenDriveModified||null;
+      state.syncConflict=s.syncConflict||null;
+      // Migration: lastLocalChange used to mean "last sync time". If this device
+      // was synced under the old scheme, treat that stamp as the last sync.
+      if(state.lastLocalChange&&!state.lastSyncedAt&&!('dirty' in s)){
+        state.lastSyncedAt=state.lastLocalChange;state.dirty=false;
+      }
       // Migrate any catalysts stored under the old single-anchor shape
       (s.memos||[]).forEach(m=>{
         if(m.mgmt>3)m.mgmt=3;   // legacy 5-star ratings clamp to the new 3-star scale
@@ -364,6 +377,8 @@ function save(){
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
     portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
+    dirty:state.dirty,lastSyncedAt:state.lastSyncedAt,lastSyncRemoteTime:state.lastSyncRemoteTime,
+    lastSeenDriveModified:state.lastSeenDriveModified,syncConflict:state.syncConflict,
     geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,groundingOff:state.groundingOff,
 
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
@@ -762,7 +777,7 @@ function addCatalyst(memoId){
   memo.updatedAt=new Date().toISOString();
   save();renderMemoView(document.getElementById('mainContent'));
   showToast(parsed?`Added — ${fmtCatalystRange(parsed.start,parsed.end)}`:'Added (timing not recognised)');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 function removeCatalyst(memoId,i){
   const memo=state.memos.find(m=>m.id===memoId);
@@ -770,7 +785,7 @@ function removeCatalyst(memoId,i){
   memo.catalysts.splice(i,1);
   memo.updatedAt=new Date().toISOString();
   save();renderMemoView(document.getElementById('mainContent'));
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 function toggleCatalystDone(memoId,i){
   const memo=state.memos.find(m=>m.id===memoId);
@@ -778,7 +793,7 @@ function toggleCatalystDone(memoId,i){
   memo.catalysts[i].done=!memo.catalysts[i].done;
   memo.updatedAt=new Date().toISOString();
   save();renderMemoView(document.getElementById('mainContent'));
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 function toggleMemoSection(memoId,sectionKey){
@@ -815,7 +830,7 @@ function saveSectionEdit(memoId,sectionKey){
   save();
   showToast('Section saved');
   renderMemoView(document.getElementById('mainContent'));
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 function renderMgmtStars(n){
@@ -849,7 +864,7 @@ function setMgmt(memoId,n){
   save();closeModal();
   renderMemoView(document.getElementById('mainContent'));
   showToast('Management rating updated');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 function openConvictionPicker(memoId){
@@ -917,7 +932,7 @@ function createMemo(){
   state.activeMemoId=memo.id;
   render();
   showToast('Memo created');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 function editMemoMeta(memoId){
@@ -960,7 +975,7 @@ function deleteMemo(memoId){
   if(!confirm('Delete this memo? This cannot be undone.'))return;
   state.memos=state.memos.filter(m=>m.id!==memoId);
   state.activeMemoId=null;save();render();showToast('Memo deleted');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 function closeMemoView(){
@@ -1348,7 +1363,7 @@ async function fetchNewsForTicker(symbol,opts){
     const digest=await fetchNewsFor(s,win);
     state.newsCache[s]=digest;
     save();
-    if(state.driveSynced)scheduleDriveSync();
+    markDirty();
     return 'ok';
   }catch(e){
     state.newsCache[s]={
@@ -2428,7 +2443,7 @@ function applyTags(){
   state.portSelected={};
   render();
   showToast('Tagged '+syms.length+' holding'+(syms.length===1?'':'s'));
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 /* ── broker CSV import ── */
@@ -2543,7 +2558,7 @@ function importPortfolioCsv(){
   save();closeModal();render();
   const newUntagged=state.portfolio.filter(h=>{const t=state.tickerTags[h.symbol]||{};return!t.sector&&!t.geography;}).length;
   showToast('Imported '+holdings.length+' holdings'+(newUntagged?' — '+newUntagged+' untagged':''));
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 
 function parseWeight(val){
@@ -2585,12 +2600,12 @@ function submitEntry(){
   state.entries.unshift(entry);save();
   document.getElementById('composeText').value='';document.getElementById('composeTags').innerHTML='';document.getElementById('submitBtn').disabled=true;
   closeCompose();render();showToast('Entry saved');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 function deleteEntry(id){
   if(!confirm('Delete this entry?'))return;
   state.entries=state.entries.filter(e=>e.id!==id);save();render();showToast('Entry deleted');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 function editEntry(id){
   const entry=state.entries.find(e=>e.id===id);if(!entry)return;
@@ -2604,7 +2619,7 @@ function saveEdit(id){
   const entry=state.entries.find(e=>e.id===id);
   if(entry){entry.text=text;entry.tickers=extractTickers(text);entry.hashes=extractHashes(text);}
   save();closeModal();render();showToast('Entry updated');
-  if(state.driveSynced)scheduleDriveSync();
+  markDirty();
 }
 function closeModal(){document.getElementById('modalRoot').innerHTML='';}
 
@@ -2647,10 +2662,11 @@ const OAUTH_SCOPES   = 'https://www.googleapis.com/auth/drive.file';
     // share with Sheets
     state.sheetsToken = data.access_token;
     sessionStorage.removeItem('oauth_pending');
+    syncError=false;
     save();
-    updateSyncBadge('ok');
+    refreshSyncBadge();
     showToast('Connected — syncing…');
-    pushToDrive();
+    pushToDrive({manual:true});
   }catch(e){showToast('OAuth failed: '+e.message);}
 })();
 
@@ -2682,7 +2698,8 @@ async function getAccessToken(){
     save();
     return data.access_token;
   }catch(e){
-    updateSyncBadge('error');
+    syncError=true;
+    refreshSyncBadge();
     return null;
   }
 }
@@ -2691,9 +2708,47 @@ async function getAccessToken(){
 if(!['log','memos','portfolio','news','tickers'].includes(state.activeTab))state.activeTab='log';
 
 let syncTimer;
-function scheduleDriveSync(){clearTimeout(syncTimer);syncTimer=setTimeout(pushToDrive,2000);}
+let syncInFlight=false;   // a push or pull is actually on the wire right now
+let syncError=false;      // last network/auth attempt failed (session-only)
+
+// Called by every site that mutates diary data. Records WHEN the change happened
+// (not when it was synced) so the conflict guard has an honest local clock.
+function markDirty(){
+  state.lastLocalChange=Date.now();
+  state.dirty=true;
+  save();
+  refreshSyncBadge();
+  if(state.oauthRefreshToken)scheduleDriveSync();
+}
+function scheduleDriveSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>pushToDrive({manual:false}),2000);}
+
 function syncNow(){
+  if(state.syncConflict){openSyncConflictModal(state.syncConflict);return;}
   openOAuthSetup();
+}
+
+// Compact for the badge: now / 4m / 3h / 2d
+function relShort(ms){
+  if(!ms)return '';
+  const d=Date.now()-ms;
+  if(d<60000)return 'now';
+  if(d<3600000)return Math.floor(d/60000)+'m';
+  if(d<86400000)return Math.floor(d/3600000)+'h';
+  return Math.floor(d/86400000)+'d';
+}
+// Readable for modals and toasts
+function relLong(ms){
+  if(!ms)return 'never';
+  const d=Date.now()-ms;
+  if(d<60000)return 'just now';
+  const m=Math.floor(d/60000);if(m<60)return m+(m===1?' minute ago':' minutes ago');
+  const h=Math.floor(d/3600000);if(h<24)return h+(h===1?' hour ago':' hours ago');
+  const dy=Math.floor(d/86400000);return dy+(dy===1?' day ago':' days ago');
+}
+function absTime(ms){
+  if(!ms)return '—';
+  const d=new Date(ms);
+  return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 }
 
 function openOAuthSetup(){
@@ -2706,15 +2761,20 @@ function openOAuthSetup(){
         <button class="icon-btn" onclick="closeModal()">✕</button>
       </div>
       ${isConnected
-        ? `<div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
-            Your diary syncs automatically to Drive.<br>
-            <span style="font-family:var(--font-mono);font-size:11px;color:var(--ink3)">drive.file scope only — no other Drive access.</span>
+        ? `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;font-size:12px;font-family:var(--font-mono);color:var(--ink2);line-height:1.9;margin-bottom:12px">
+             <div>Status · <span style="color:${syncStatusColour()}">${syncStatusLine()}</span></div>
+             <div>Last synced · <span style="color:var(--ink)">${state.lastSyncedAt?absTime(state.lastSyncedAt)+' ('+relLong(state.lastSyncedAt)+')':'never from this device'}</span></div>
+             <div>On this device · <span style="color:var(--ink)">${state.entries.length} entries, ${state.memos.length} memos</span></div>
+           </div>
+           <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:14px">
+             drive.file scope only. Drive keeps 30 days of history for the backup file.
            </div>
            <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
              <button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="disconnectOAuth()">Disconnect</button>
              <button class="btn btn-ghost" onclick="reAuthenticate()">Re-authenticate</button>
              <button class="btn btn-ghost" onclick="closeModal();restoreFromDrive()">Restore</button>
-             <button class="btn btn-primary" onclick="closeModal();pushToDrive()">Sync now</button>
+             <button class="btn btn-ghost" onclick="closeModal();checkDriveForNewer({silent:false})">Check Drive</button>
+             <button class="btn btn-primary" onclick="closeModal();pushToDrive({manual:true})">Sync now</button>
            </div>`
         : `<div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
             You'll need a <strong>Google Cloud OAuth 2.0 Client ID</strong>.<br>
@@ -2764,12 +2824,17 @@ function disconnectOAuth(){
   state.oauthClientId=null;state.oauthClientSecret=null;
   state.oauthRefreshToken=null;state.oauthAccessToken=null;
   state.oauthExpiry=0;state.driveSynced=false;
-  save();closeModal();updateSyncBadge('disconnected');showToast('Disconnected');
+  state.dirty=false;state.syncConflict=null;state.lastSyncedAt=null;state.lastSyncRemoteTime=null;state.lastSeenDriveModified=null;
+  syncError=false;save();closeModal();refreshSyncBadge();showToast('Disconnected');
 }
 async function restoreFromDrive(){
   const hasLocal=state.entries.length||state.memos.length||Object.keys(state.tickerTags).length;
-  if(hasLocal&&!confirm('Restore from Drive? This replaces the data on this device with the Drive backup.'))return;
-  await pullFromDrive({silent:false});
+  const warn=state.dirty
+    ? 'Restore from Drive? This device has unsaved changes that will be discarded.'
+    : 'Restore from Drive? This replaces the data on this device with the Drive backup.';
+  if(hasLocal&&!confirm(warn))return;
+  state.syncConflict=null;save();
+  await pullFromDrive({silent:false,force:true});
 }
 
 function reAuthenticate(){
@@ -2779,23 +2844,62 @@ function reAuthenticate(){
   setTimeout(openOAuthSetup,100);
 }
 
-function refreshSyncBadge(){
-  // Keep the badge in step with the real connection state on every render
-  if(!state.oauthRefreshToken){updateSyncBadge('disconnected');return;}
-  const badge=document.getElementById('syncBadge');
-  if(badge&&badge.classList.contains('error'))return;   // leave an error visible
-  if(badge&&badge.classList.contains('syncing')&&document.getElementById('syncLabel')?.textContent==='Syncing…')return;
-  updateSyncBadge('ok');
+// The badge reports real state, in priority order. Nothing here guesses.
+function computeSyncStatus(){
+  if(!state.oauthRefreshToken)return 'disconnected';
+  if(syncInFlight)return 'syncing';
+  if(state.syncConflict)return 'conflict';
+  if(syncError)return 'error';
+  if(state.dirty)return 'dirty';
+  return 'ok';
 }
-function updateSyncBadge(status){
+function refreshSyncBadge(){
+  const status=computeSyncStatus();
   const badge=document.getElementById('syncBadge');
   const dot=document.getElementById('syncDot');
   const label=document.getElementById('syncLabel');
+  if(!badge||!dot||!label)return;
   badge.className='sync-badge';dot.className='dot';
-  if(status==='syncing'){badge.classList.add('syncing');dot.classList.add('pulse');label.textContent='Syncing…';}
-  else if(status==='ok'){badge.classList.add('syncing');label.textContent='Drive ✓';}
-  else if(status==='error'){badge.classList.add('error');label.textContent='Sync error';}
-  else{label.textContent='Connect Drive';}
+  if(status==='syncing'){
+    badge.classList.add('syncing');dot.classList.add('pulse');label.textContent='Syncing…';
+  }else if(status==='conflict'){
+    badge.classList.add('conflict');dot.classList.add('pulse');label.textContent='Drive is newer';
+  }else if(status==='error'){
+    badge.classList.add('error');label.textContent='Sync error';
+  }else if(status==='dirty'){
+    badge.classList.add('dirty');label.textContent='Unsaved';
+  }else if(status==='ok'){
+    badge.classList.add('syncing');
+    label.textContent=state.lastSyncedAt?('Synced · '+relShort(state.lastSyncedAt)):'Synced';
+  }else{
+    label.textContent='Connect Drive';
+  }
+  badge.title=syncTooltip(status);
+}
+function syncTooltip(status){
+  if(status==='disconnected')return 'Tap to connect a Google account';
+  if(status==='syncing')return 'Talking to Drive…';
+  if(status==='conflict')return 'Another device saved a newer copy — tap to choose which one to keep';
+  if(status==='error')return 'Last sync attempt failed — tap for options';
+  if(status==='dirty')return 'Changes on this device are not in Drive yet';
+  return 'Last synced from this device '+relLong(state.lastSyncedAt);
+}
+// Keep the relative timestamp honest without re-rendering the app
+setInterval(refreshSyncBadge,30000);
+function syncStatusLine(){
+  const st=computeSyncStatus();
+  if(st==='syncing')return 'syncing now';
+  if(st==='conflict')return 'two versions — needs a decision';
+  if(st==='error')return 'last attempt failed';
+  if(st==='dirty')return 'unsaved changes on this device';
+  if(st==='disconnected')return 'not connected';
+  return 'up to date';
+}
+function syncStatusColour(){
+  const st=computeSyncStatus();
+  if(st==='conflict'||st==='error')return 'var(--danger)';
+  if(st==='dirty')return 'var(--warn-txt)';
+  return 'var(--accent)';
 }
 
 async function findDriveFile(token){
@@ -2810,26 +2914,42 @@ async function findDriveFile(token){
   return null;
 }
 
+// Cheap metadata-only read. modifiedTime tells us whether Drive moved since we
+// last looked; version lets us spot a write that landed inside our upload window.
+async function driveMeta(token,fileId){
+  try{
+    const res=await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,modifiedTime,version`,{headers:{Authorization:`Bearer ${token}`}});
+    if(!res.ok)return null;
+    const m=await res.json();
+    return m&&m.modifiedTime?m:null;
+  }catch(e){return null;}
+}
+
+/* ── Pull ─────────────────────────────────────────────────────────────── */
 async function pullFromDrive(opts){
-  const silent=opts&&opts.silent;
+  opts=opts||{};
+  const silent=!!opts.silent, force=!!opts.force;
   const token=await getAccessToken();
   if(!token){if(!silent)showToast('Not connected to Drive');return false;}
+  syncInFlight=true;refreshSyncBadge();
   try{
     const fileId=await findDriveFile(token);
     if(!fileId){if(!silent)showToast('No backup found in Drive');return false;}
+    const meta=await driveMeta(token,fileId);
     const res=await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,{headers:{Authorization:`Bearer ${token}`}});
     if(!res.ok)throw new Error('Could not read the Drive backup');
     const remote=await res.json();
-    if(!remote||typeof remote!=='object')throw new Error('Drive backup is not readable');
+    if(!remote||typeof remote!=='object'||!Array.isArray(remote.entries))throw new Error('Drive backup is not readable');
 
     const remoteTime=remote.lastSync?new Date(remote.lastSync).getTime():0;
-    const localTime=state.lastLocalChange||0;
+    const seenTime=state.lastSyncRemoteTime?new Date(state.lastSyncRemoteTime).getTime():0;
     const localEmpty=!state.entries.length&&!state.memos.length&&!Object.keys(state.tickerTags).length;
 
-    // Only overwrite local data when the Drive copy is genuinely newer,
-    // or when there is nothing local to lose.
-    if(!localEmpty && remoteTime<=localTime){
-      if(!silent)showToast('Local copy is already up to date');
+    // Nothing to gain: we have already seen this Drive copy and we hold data.
+    if(!force&&!localEmpty&&remoteTime<=seenTime){
+      // Still record the metadata we just observed so the guard stays calibrated.
+      if(meta){state.lastSeenDriveModified=meta.modifiedTime;save();}
+      if(!silent)showToast('This device is already up to date');
       return false;
     }
 
@@ -2840,21 +2960,35 @@ async function pullFromDrive(opts){
     if(remote.portfolio)state.portfolio=remote.portfolio;
     if(remote.portfolioMeta)state.portfolioMeta=remote.portfolioMeta;
     if(remote.portfolioSyncedAt)state.portfolioSyncedAt=remote.portfolioSyncedAt;
+
+    state.lastSyncRemoteTime=remote.lastSync||null;
+    state.lastSeenDriveModified=meta?meta.modifiedTime:state.lastSeenDriveModified;
+    state.lastSyncedAt=Date.now();
     state.lastLocalChange=remoteTime;
+    state.dirty=false;
+    state.syncConflict=null;
+    syncError=false;
     save();render();
-    showToast('Restored from Drive — '+state.entries.length+' entries, '+state.memos.length+' memos');
+    showToast('Took Drive\u2019s copy — '+state.entries.length+' entries, '+state.memos.length+' memos');
     return true;
   }catch(e){
-    if(!silent)showToast('Drive restore failed: '+e.message);
+    syncError=true;
+    if(!silent)showToast('Could not read Drive: '+e.message);
     return false;
+  }finally{
+    syncInFlight=false;refreshSyncBadge();
   }
 }
 
-async function pushToDrive(){
-  const token = await getAccessToken();
+/* ── Push ─────────────────────────────────────────────────────────────── */
+async function pushToDrive(opts){
+  opts=opts||{};
+  const manual=!!opts.manual, force=!!opts.force;
+  if(syncInFlight)return false;   // never let two writes overlap from one device
+  const token=await getAccessToken();
   if(!token){
-    if(state.oauthRefreshToken) updateSyncBadge('error');
-    return;
+    if(state.oauthRefreshToken){syncError=true;refreshSyncBadge();}
+    return false;
   }
   // Safety: never let an empty device overwrite a Drive backup that has data.
   const localEmpty=!state.entries.length&&!state.memos.length&&!Object.keys(state.tickerTags).length;
@@ -2867,41 +3001,158 @@ async function pushToDrive(){
           const rem=await chk.json();
           const remoteHasData=(rem.entries&&rem.entries.length)||(rem.memos&&rem.memos.length)||(rem.tickerTags&&Object.keys(rem.tickerTags).length);
           if(remoteHasData){
-            updateSyncBadge('ok');
+            syncError=false;refreshSyncBadge();
             showToast('Drive has data this device does not — use Restore, not Sync');
-            return;
+            return false;
           }
         }
       }
     }catch(e){/* if the check fails, fall through to a normal sync */}
   }
-  updateSyncBadge('syncing');
-  const now=new Date().toISOString();
-  state.lastLocalChange=Date.now();
-  const data=JSON.stringify({
-    entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,
-    portfolio:state.portfolio,portfolioMeta:state.portfolioMeta,portfolioSyncedAt:state.portfolioSyncedAt,
-    newsCache:state.newsCache,
-    lastSync:now
-  },null,2);
+
+  syncInFlight=true;refreshSyncBadge();
+  let preVersion=null;
   try{
-    let fileId=state.driveFileId;
-    if(!fileId){
-      const searchRes=await fetch(`https://www.googleapis.com/drive/v3/files?q=name%3D'investment-diary.json'+and+trashed%3Dfalse&fields=files(id,name)`,{headers:{Authorization:`Bearer ${token}`}});
-      const searchData=await searchRes.json();
-      if(searchData.files?.length)fileId=searchData.files[0].id;
-    }
+    let fileId=state.driveFileId||await findDriveFile(token);
+
+    /* Conflict guard — refuse to flatten a copy we have not seen.
+       Runs immediately before the write, so it also catches the case where
+       another device pushed while this one had the app open. */
     if(fileId){
-      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:data});
-    }else{
+      const meta=await driveMeta(token,fileId);
+      if(meta){
+        preVersion=Number(meta.version)||null;
+        if(!force&&state.lastSeenDriveModified&&meta.modifiedTime!==state.lastSeenDriveModified){
+          state.syncConflict={
+            remoteModified:meta.modifiedTime,
+            detectedAt:Date.now(),
+            origin:'push'
+          };
+          save();
+          syncInFlight=false;refreshSyncBadge();
+          if(manual)openSyncConflictModal(state.syncConflict);
+          else showToast('Drive has a newer copy — tap the badge to resolve');
+          return false;
+        }
+      }
+    }
+
+    const now=new Date().toISOString();
+    const data=JSON.stringify({
+      entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,
+      portfolio:state.portfolio,portfolioMeta:state.portfolioMeta,portfolioSyncedAt:state.portfolioSyncedAt,
+      newsCache:state.newsCache,
+      lastSync:now
+    },null,2);
+
+    if(!fileId){
       const meta={name:'investment-diary.json',mimeType:'application/json'};
       const createRes=await fetch('https://www.googleapis.com/drive/v3/files',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(meta)});
       const created=await createRes.json();
+      if(!created.id)throw new Error('could not create the Drive file');
       fileId=created.id;
-      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:data});
     }
-    state.driveFileId=fileId;save();updateSyncBadge('ok');
-  }catch(err){updateSyncBadge('error');showToast('Drive sync failed');}
+    const put=await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,{method:'PATCH',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:data});
+    if(!put.ok)throw new Error('Drive rejected the upload');
+
+    state.driveFileId=fileId;
+
+    /* Read back. Two jobs: record the metadata the guard compares against next
+       time, and notice a write that slipped in while ours was uploading —
+       a version jump of more than one means somebody else also wrote. */
+    const after=await driveMeta(token,fileId);
+    if(after&&preVersion&&(Number(after.version)-preVersion)>1){
+      state.syncConflict={
+        remoteModified:after.modifiedTime,
+        detectedAt:Date.now(),
+        origin:'overlap'
+      };
+      state.lastSeenDriveModified=after.modifiedTime;
+      save();
+      syncInFlight=false;refreshSyncBadge();
+      showToast('Another device wrote at the same time — tap the badge');
+      return false;
+    }
+
+    state.lastSeenDriveModified=after?after.modifiedTime:state.lastSeenDriveModified;
+    state.lastSyncRemoteTime=now;
+    state.lastSyncedAt=Date.now();
+    state.dirty=false;
+    state.syncConflict=null;
+    syncError=false;
+    save();
+    return true;
+  }catch(err){
+    syncError=true;
+    showToast('Drive sync failed — changes are still saved on this device');
+    return false;
+  }finally{
+    syncInFlight=false;refreshSyncBadge();
+  }
+}
+
+/* ── Pull-on-open: does Drive hold something this device has not seen? ── */
+async function checkDriveForNewer(opts){
+  opts=opts||{};
+  if(!state.oauthRefreshToken)return;
+  if(syncInFlight)return;
+  const token=await getAccessToken();
+  if(!token)return;
+  const fileId=await findDriveFile(token);
+  if(!fileId)return;
+  const meta=await driveMeta(token,fileId);
+  if(!meta)return;
+  // First run on this device: adopt the current metadata as the baseline.
+  if(!state.lastSeenDriveModified){state.lastSeenDriveModified=meta.modifiedTime;save();return;}
+  if(meta.modifiedTime===state.lastSeenDriveModified)return;
+  state.syncConflict={remoteModified:meta.modifiedTime,detectedAt:Date.now(),origin:'open'};
+  save();refreshSyncBadge();
+  if(!opts.silent)openSyncConflictModal(state.syncConflict);
+}
+
+/* ── Resolution ───────────────────────────────────────────────────────── */
+function openSyncConflictModal(info){
+  info=info||state.syncConflict||{};
+  const remoteWhen=info.remoteModified?new Date(info.remoteModified).getTime():null;
+  const lead=info.origin==='overlap'
+    ? 'Another device wrote to Drive at the same moment as this one, so this device\u2019s changes may not have landed.'
+    : info.origin==='push'
+      ? 'Drive holds a copy this device has not seen, so the sync was stopped before it could overwrite anything.'
+      : 'Drive holds a copy this device has not seen.';
+  const root=document.getElementById('modalRoot');
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Two versions</div>
+        <button class="icon-btn" onclick="closeModal()">✕</button>
+      </div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:12px">${lead}</div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;font-size:12px;font-family:var(--font-mono);color:var(--ink2);line-height:1.9;margin-bottom:12px">
+        <div>Drive updated · <span style="color:var(--ink)">${remoteWhen?relLong(remoteWhen):'unknown'}</span></div>
+        <div>This device last synced · <span style="color:var(--ink)">${relLong(state.lastSyncedAt)}</span></div>
+        <div>This device · <span style="color:var(--ink)">${state.entries.length} entries, ${state.memos.length} memos${state.dirty?' · unsaved changes':''}</span></div>
+      </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:14px">
+        Drive keeps 30 days of history, so whichever you pick the other is recoverable from the file\u2019s version history.
+      </div>
+      <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
+        <button class="btn btn-ghost" onclick="closeModal()">Decide later</button>
+        <button class="btn btn-ghost" onclick="resolveConflict('local')">Keep this device\u2019s</button>
+        <button class="btn btn-primary" onclick="resolveConflict('drive')">Take Drive\u2019s</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function resolveConflict(choice){
+  closeModal();
+  if(choice==='drive'){
+    state.syncConflict=null;save();
+    await pullFromDrive({force:true,silent:false});
+  }else{
+    state.syncConflict=null;save();
+    const ok=await pushToDrive({manual:true,force:true});
+    if(ok)showToast('Drive now matches this device');
+  }
 }
 
 // Keep the batch countdown honest without re-rendering the whole app
@@ -2911,18 +3162,31 @@ render();
 (async function initBadge(){
   if(!state)return;
   if(state.oauthRefreshToken){
-    updateSyncBadge('ok');
+    refreshSyncBadge();
     // Warm up the access token so the first real sync doesn't fail
     const t=await getAccessToken();
-    updateSyncBadge(t?'ok':'error');
-    // If this device has no data (new browser, cleared cache), pull the backup down
+    syncError=!t;refreshSyncBadge();
+    if(!t)return;
+    // Empty device (new browser, cleared cache): take the backup without asking.
     const localEmpty=!state.entries.length&&!state.memos.length&&!Object.keys(state.tickerTags).length;
-    if(t&&localEmpty)await pullFromDrive({silent:true});
+    if(localEmpty){await pullFromDrive({silent:true,force:true});return;}
+    // Every other device: ask Drive whether it moved, and offer to take it.
+    await checkDriveForNewer({silent:false});
+    // A change made offline last session still needs to go up.
+    if(state.dirty&&!state.syncConflict)scheduleDriveSync();
   }else if(state.driveSynced){
     state.driveSynced=false;state.driveToken=null;
-    save();updateSyncBadge('disconnected');
+    save();refreshSyncBadge();
   }
 })();
+
+// On a phone, "open" usually means "come back to". Re-check on resume, quietly:
+// flag the badge rather than throwing a modal over whatever the user returned to.
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible')return;
+  if(!state.oauthRefreshToken||state.syncConflict||syncInFlight)return;
+  checkDriveForNewer({silent:true});
+});
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>{
     navigator.serviceWorker.register('sw.js')
