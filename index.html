@@ -984,24 +984,93 @@ function closeMemoView(){
   render();
 }
 
+/* ══ Company identity ══════════════════════════════════════════════════
+   A broker export can list one company twice: same symbol on two exchanges
+   (MNO on TSX-V and AIM), or two symbols for one company (USAS on NYSE
+   American, USA on TSX). Both are a single position.
+
+   Every function here resolves that at READ time. No stored log entry, memo
+   or portfolio row is ever rewritten, so removing a link restores the
+   previous behaviour exactly. */
+function bareSym(s){return String(s==null?'':s).replace(/^\$/,'').trim().toUpperCase();}
+
+/* The symbol a company is filed under. One hop only, so a chain can't form,
+   and a mutual link resolves identically from either side rather than
+   ping-ponging. */
+function primarySymbol(sym){
+  const s=bareSym(sym);
+  if(!s)return s;
+  const tag=state.tickerTags[s];
+  const link=bareSym(tag&&tag.sameAs);
+  if(!link||link===s)return s;
+  const back=bareSym((state.tickerTags[link]||{}).sameAs);
+  if(back===s)return s<link?s:link;    // mutual link — pick deterministically
+  return link;
+}
+function sameCompany(a,b){return primarySymbol(a)===primarySymbol(b);}
+
+/* Every portfolio line belonging to one company — one per listing. */
+function holdingsFor(sym){
+  const p=primarySymbol(sym);
+  return state.portfolio.filter(h=>primarySymbol(h.symbol)===p);
+}
+/* The largest single line, for anything that needs one representative row
+   (a company name, a broker label). Never used for weight. */
+function holdingFor(sym){
+  const l=holdingsFor(sym);
+  if(!l.length)return null;
+  return l.slice().sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0))[0];
+}
+/* Combined weight across every listing. This is what the portfolio means. */
+function weightFor(sym){
+  return holdingsFor(sym).reduce((t,h)=>t+(parseFloat(h.weight_pct)||0),0);
+}
+/* One entry per company held, with its individual lines kept intact. */
+function portfolioGroups(){
+  const map={};
+  state.portfolio.forEach(h=>{
+    const key=primarySymbol(h.symbol);
+    if(!map[key])map[key]={key,symbol:key,rows:[],weight_pct:0};
+    map[key].rows.push(h);
+    map[key].weight_pct+=parseFloat(h.weight_pct)||0;
+  });
+  return Object.values(map).map(g=>{
+    const biggest=g.rows.slice().sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0))[0];
+    g.name=lookupCompanyName(g.key)||biggest.name||'';
+    g.multi=g.rows.length>1;
+    /* What is actually held, spelled out. If every line carries the filing
+       symbol, the venue alone is enough (CA · UK). If the symbols differ, or
+       the filing symbol is no longer held at all, show the symbol too — so
+       selling one leg can never leave a symbol on screen you don't own. */
+    const allSameSym=g.rows.every(r=>bareSym(r.symbol)===g.key);
+    g.legs=g.rows
+      .slice()
+      .sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0))
+      .map(r=>allSameSym?(r.listing||'?'):(bareSym(r.symbol)+(r.listing?' '+r.listing:'')));
+    return g;
+  });
+}
+
 // Open memo from ticker chip in log
 function lookupCompanyName(symbol){
-  const bare=symbol.replace(/^\$/,'').toUpperCase();
-  const tag=state.tickerTags[bare];
-  if(tag&&tag.name)return tag.name;                     // manual override wins
-  const h=state.portfolio.find(x=>x.symbol===bare);
+  const bare=bareSym(symbol);
+  const tag=state.tickerTags[bare]||{};
+  if(tag.name)return tag.name;                          // manual override wins
+  const prim=primarySymbol(bare);                       // then the linked company's
+  if(prim!==bare&&(state.tickerTags[prim]||{}).name)return state.tickerTags[prim].name;
+  const h=holdingFor(bare);
   return h?h.name:'';                                    // otherwise from the CSV
 }
 
 function openTickerMemo(ticker){
   const t=ticker.startsWith('$')?ticker:'$'+ticker;
-  const memo=state.memos.find(m=>m.ticker===t||m.ticker===ticker);
+  const memo=state.memos.find(m=>sameCompany(m.ticker,t));
   if(memo){setTab('memos',{memoId:memo.id});return;}
-  const bare=ticker.replace(/^\$/,'').toUpperCase();
+  const bare=bareSym(ticker);
   const name=lookupCompanyName(bare);
-  const holding=state.portfolio.find(x=>x.symbol===bare);
+  const w=weightFor(bare);
   const tag=state.tickerTags[bare]||{};
-  const weightLine=holding?`<span style="font-family:var(--font-mono);font-size:12px;color:var(--ink3)">${(holding.weight_pct*100).toFixed(1)}% of portfolio</span>`:'';
+  const weightLine=w>0?`<span style="font-family:var(--font-mono);font-size:12px;color:var(--ink3)">${(w*100).toFixed(1)}% of portfolio</span>`:'';
   const tagLine=[tag.sector,tag.geography].filter(Boolean).join(' · ');
   const root=document.getElementById('modalRoot');
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -1132,12 +1201,14 @@ function currentWindow(){return NEWS_WINDOWS[state.newsWindow]||NEWS_WINDOWS['7d
 /* ══ Which tickers we watch: holdings + anything mentioned in the log ══ */
 function newsUniverse(){
   const map={};
-  state.portfolio.forEach(h=>{
-    map[h.symbol]={symbol:h.symbol,inPortfolio:true,weight:h.weight_pct||0};
+  // One entry per company, not per listing — a second listing is not a
+  // second search, and the free tier only allows ~20 grounded calls a day.
+  portfolioGroups().forEach(g=>{
+    map[g.key]={symbol:g.key,inPortfolio:true,weight:g.weight_pct||0};
   });
   state.entries.forEach(e=>{
     e.tickers.forEach(t=>{
-      const s=t.replace(/^\$/,'').toUpperCase();
+      const s=primarySymbol(t);
       if(!map[s])map[s]={symbol:s,inPortfolio:false,weight:0};
     });
   });
@@ -1149,16 +1220,16 @@ function newsUniverse(){
 
 /* Everything known about a ticker, to steer the search and the analysis */
 function tickerContext(symbol){
-  const s=symbol.replace(/^\$/,'').toUpperCase();
+  const s=primarySymbol(symbol);
   const tag=state.tickerTags[s]||{};
-  const holding=state.portfolio.find(h=>h.symbol===s);
-  const memo=state.memos.find(m=>m.ticker==='$'+s||m.ticker===s);
+  const holding=holdingFor(s);
+  const memo=state.memos.find(m=>sameCompany(m.ticker,s));
   return {
     symbol:s,
     legalName: tag.legalName||tag.name||(holding?holding.name:'')||'',
     sector:    tag.sector||'',
     geography: tag.geography||'',
-    weight:    holding?holding.weight_pct:0,
+    weight:    weightFor(s),
     inPortfolio: !!holding,
     memo,
     thesis:    memo&&memo.sections?(memo.sections.thesis||''):'',
@@ -1732,7 +1803,7 @@ function renderNews(){
     const c=state.newsCache[t.symbol];
     const loading=!!state.newsLoading[t.symbol];
     const tag=state.tickerTags[t.symbol]||{};
-    const holding=state.portfolio.find(h=>h.symbol===t.symbol);
+    const holding=holdingFor(t.symbol);
     const name=tag.legalName||tag.name||(holding?holding.name:'')||'';
 
     let right,statusLine;
@@ -1882,16 +1953,18 @@ function renderNewsDetail(sym){
 // Everything known about every ticker, from every source
 function tickerArchive(){
   const map={};
+  // Everything files under the company's primary symbol, so two listings and
+  // two symbols for one company converge on a single archive row.
   const touch=(sym)=>{
-    const s=sym.replace(/^\$/,'').toUpperCase();
-    if(!map[s])map[s]={symbol:s,entries:[],holding:null,memo:null,news:null};
+    const s=primarySymbol(sym);
+    if(!map[s])map[s]={symbol:s,entries:[],holding:null,holdings:[],memo:null,news:null};
     return map[s];
   };
 
   state.entries.forEach(e=>{
     e.tickers.forEach(t=>{ touch(t).entries.push(e); });
   });
-  state.portfolio.forEach(h=>{ touch(h.symbol).holding=h; });
+  state.portfolio.forEach(h=>{ const t=touch(h.symbol); t.holdings.push(h); });
   state.memos.forEach(m=>{ touch(m.ticker).memo=m; });
   Object.keys(state.newsCache).forEach(s=>{ touch(s).news=state.newsCache[s]; });
   Object.keys(state.tickerTags).forEach(s=>{ touch(s); });
@@ -1902,7 +1975,10 @@ function tickerArchive(){
     t.name      = tag.name||tag.legalName||(t.holding?t.holding.name:'')||'';
     t.sector    = tag.sector||'';
     t.geography = tag.geography||'';
-    t.weight    = t.holding?t.holding.weight_pct:0;
+    t.holdings.sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0));
+    t.holding   = t.holdings[0]||null;
+    t.weight    = weightFor(t.symbol);
+    t.legs      = t.holdings.length>1?(portfolioGroups().find(g=>g.key===t.symbol)||{}).legs||[]:[];
     t.lastTouch = t.entries.length?new Date(t.entries[0].ts).getTime():0;
     // held now / watched (logged, never held) / closed (has history, not held now)
     t.status = t.holding ? 'held' : (t.entries.length||t.memo ? 'closed' : 'watched');
@@ -1927,10 +2003,10 @@ const TICKER_SORTS={
 };
 function setTickerFilter(f){state.tickerFilter=f;save();render();}
 function setTickerSort(s){state.tickerSort=s;save();render();}
-function openTicker(sym){state.activeTicker=sym.replace(/^\$/,'').toUpperCase();render();}
+function openTicker(sym){state.activeTicker=primarySymbol(sym);render();}
 // The one way in to a ticker from anywhere in the app
 function goToTicker(sym){
-  setTab('tickers',{ticker:sym.replace(/^\$/,'').toUpperCase()});
+  setTab('tickers',{ticker:primarySymbol(sym)});
 }
 function closeTicker(){state.activeTicker=null;render();}
 
@@ -2010,7 +2086,7 @@ function renderTickerDetail(sym){
 
   // Header
   const statusLine=t.holding
-    ? `<span style="color:var(--accent)">${(t.weight*100).toFixed(1)}% of portfolio</span>`
+    ? `<span style="color:var(--accent)">${(t.weight*100).toFixed(1)}% of portfolio${t.legs.length?` <span style="color:var(--ink3)">(${t.legs.join(' · ')})</span>`:''}</span>`
     : (t.entries.length||t.memo)
       ? `<span style="color:var(--ink3)">not currently held</span>`
       : `<span style="color:var(--ink3)">no position</span>`;
@@ -2121,8 +2197,12 @@ function renderPortfolio(){
 
   if(state.portView==='catalysts')return connectBtn+viewToggle+renderCatalystTimeline();
 
-  // merge in tags
-  const rows=p.map(h=>{const t=state.tickerTags[h.symbol]||{};return{...h,name:t.name||h.name||'',sector:t.sector||'',geography:t.geography||'',gfTicker:t.gfTicker||''};});
+  // One row per company — a second listing adds to the weight, it does not
+  // add a row. The individual lines stay visible in the `legs` label.
+  const rows=portfolioGroups().map(g=>{
+    const t=state.tickerTags[g.key]||{};
+    return {...g,symbol:g.key,name:t.name||g.name||'',sector:t.sector||'',geography:t.geography||'',gfTicker:t.gfTicker||''};
+  });
 
   // summary cards
   const meta=state.portfolioMeta;
@@ -2228,9 +2308,12 @@ function renderPortfolio(){
     const catLine=cat
       ?`<div style="font-size:10px;font-family:var(--font-mono);color:${new Date(cat.end||cat.start)<now?'var(--warn-txt)':'var(--accent)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">◆ ${cat.timing||fmtCatalystRange(cat.start,cat.end)}</div>`
       :'';
+    const legLine=h.multi
+      ? `<div style="font-size:10px;font-family:var(--font-mono);color:var(--tag-txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">⑂ ${h.legs.join(' · ')}</div>`
+      : '';
     const subLine=state.portSort==='catalyst'
       ? (catLine||`<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">no catalyst</div>`)
-      : `<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div>`;
+      : (legLine||`<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div>`);
     return`<div class="ticker-row" onclick="${clickAction}" style="${isSel?'border-color:var(--accent);background:var(--accent2);':''}">
       ${selMode?`<div style="width:20px;height:20px;border-radius:5px;border:2px solid ${isSel?'var(--accent)':'var(--border2)'};background:${isSel?'var(--accent)':'transparent'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;margin-right:8px;flex-shrink:0">${isSel?'✓':''}</div>`:''}
       <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${h.symbol}</div>${subLine}</div>
@@ -2250,7 +2333,7 @@ function renderPortfolio(){
   return connectBtn+viewToggle+syncInfo+summaryHtml+
     `<div class="section-label">Sector</div><div class="ticker-list" style="margin-bottom:16px">${sectorHtml}</div>`+
     geoSection+
-    `<div class="section-label">Holdings (${sorted.length}${activeFilters.length?` of ${rows.length}`:''}) — by ${state.portSort==='catalyst'?'next catalyst':'weight'}</div>`+
+    `<div class="section-label">Holdings (${sorted.length}${activeFilters.length?` of ${rows.length}`:''}${p.length>rows.length?` · ${p.length} listings`:''}) — by ${state.portSort==='catalyst'?'next catalyst':'weight'}</div>`+
     filterBanner+
     sortToggle+
     tagToolbar+
@@ -2264,7 +2347,7 @@ function setPortSort(s){state.portSort=s;save();render();}
 /* The soonest pending catalyst for a holding — used to annotate and sort the
    holdings list. Returns {start,end,timing,text} or null. */
 function nextCatalystFor(symbol){
-  const memo=state.memos.find(m=>m.ticker.replace(/^\$/,'')===symbol);
+  const memo=state.memos.find(m=>sameCompany(m.ticker,symbol));
   if(!memo||!memo.catalysts)return null;
   const pending=memo.catalysts
     .filter(c=>!c.done&&c.start)
@@ -2280,10 +2363,9 @@ function renderCatalystTimeline(){
   state.memos.forEach(m=>{
     (m.catalysts||[]).forEach(cat=>{
       if(cat.done)return;
-      const holding=state.portfolio.find(h=>h.symbol===m.ticker.replace(/^\$/,''));
       all.push({
         ticker:m.ticker.replace(/^\$/,''),
-        weight:holding?holding.weight_pct:0,
+        weight:weightFor(m.ticker),
         text:cat.text, timing:cat.timing, start:cat.start, end:cat.end,
       });
     });
@@ -2364,15 +2446,21 @@ function togglePortSelect(sym){
   render();
 }
 function selectUntaggedHoldings(){
-  state.portfolio.forEach(h=>{
-    const t=state.tickerTags[h.symbol]||{};
+  portfolioGroups().forEach(h=>{
+    const t=state.tickerTags[h.key]||{};
     if(t.sector||t.geography)return;
     // Don't select rows the current filter has hidden
     if(state.portSectorFilter&&state.portSectorFilter!=='Untagged')return;
     if(state.portGeoFilter)return;
-    state.portSelected[h.symbol]=true;
+    state.portSelected[h.key]=true;
   });
   render();
+}
+function allPortfolioSymbols(){
+  const set=new Set();
+  state.portfolio.forEach(h=>set.add(bareSym(h.symbol)));
+  Object.keys(state.tickerTags).forEach(s=>set.add(bareSym(s)));
+  return [...set].sort();
 }
 function allExistingTagValues(field){
   const vals=new Set();
@@ -2412,6 +2500,14 @@ function openTagModal(){
       <div class="field-row">
         <div class="field-label">Google Finance ticker <span style="opacity:.5">(override — e.g. OTC listing)</span></div>
         <input class="field-input" id="tagGfInput" placeholder="e.g. OTCMKTS:AUMBF" value="${cur.gfTicker||''}" style="font-family:var(--font-mono)">
+      </div>
+      <div class="field-row">
+        <div class="field-label">Same company as <span style="opacity:.5">(a second symbol for one company — e.g. USA → USAS)</span></div>
+        <input class="field-input" id="tagSameAsInput" list="symbolList" placeholder="leave blank if independent" value="${cur.sameAs||''}" style="font-family:var(--font-mono)">
+        <datalist id="symbolList">${allPortfolioSymbols().filter(v=>v!==syms[0]).map(v=>`<option value="${v}">`).join('')}</datalist>
+      </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin:-4px 0 10px">
+        Weight, memo, news and catalysts merge under the other symbol. Nothing is rewritten — clear this field to separate them again.
       </div>`:''}
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -2428,6 +2524,15 @@ function applyTags(){
   const gf=(document.getElementById('tagGfInput')?.value||'').trim();
   const nameOverride=(document.getElementById('tagNameInput')?.value||'').trim();
   const legalName=(document.getElementById('tagLegalInput')?.value||'').trim();
+  const sameAsRaw=document.getElementById('tagSameAsInput')?.value;
+  const sameAs=bareSym(sameAsRaw);
+  if(syms.length===1&&sameAsRaw!==undefined&&sameAs){
+    if(sameAs===bareSym(syms[0])){showToast('A company cannot be linked to itself');return;}
+    const onward=bareSym((state.tickerTags[sameAs]||{}).sameAs);
+    if(onward&&onward!==bareSym(syms[0])){
+      showToast(sameAs+' already points at '+onward+' — link to '+onward+' instead');return;
+    }
+  }
   syms.forEach(s=>{
     const t=state.tickerTags[s]||{};
     if(sector)t.sector=sector;
@@ -2436,6 +2541,7 @@ function applyTags(){
       if(gf)t.gfTicker=gf;
       if(nameOverride)t.name=nameOverride;else delete t.name;
       if(legalName)t.legalName=legalName;else delete t.legalName;
+      if(sameAsRaw!==undefined){ if(sameAs)t.sameAs=sameAs; else delete t.sameAs; }
     }
     state.tickerTags[s]=t;
   });
@@ -2444,6 +2550,64 @@ function applyTags(){
   render();
   showToast('Tagged '+syms.length+' holding'+(syms.length===1?'':'s'));
   markDirty();
+}
+
+/* Two different symbols under an identical company name are almost always one
+   company on two exchanges. Offered, never applied automatically — the match
+   is exact on the normalised name, so it stays conservative. */
+function findCompanyLinkSuggestions(){
+  const byName={};
+  state.portfolio.forEach(h=>{
+    const n=String(h.name||'').toLowerCase().replace(/\s+/g,' ').trim();
+    if(!n)return;
+    const sym=bareSym(h.symbol);
+    if(!byName[n])byName[n]=new Set();
+    byName[n].add(sym);
+  });
+  const out=[];
+  Object.entries(byName).forEach(([n,set])=>{
+    const syms=[...set];
+    if(syms.length<2)return;
+    // already linked to each other? nothing to suggest
+    const primaries=new Set(syms.map(primarySymbol));
+    if(primaries.size<2)return;
+    syms.sort((a,b)=>weightFor(b)-weightFor(a));
+    out.push({primary:syms[0],others:syms.slice(1),name:n});
+  });
+  return out;
+}
+function openLinkSuggestModal(list){
+  const root=document.getElementById('modalRoot');
+  const items=list.map((s,i)=>`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:8px">
+      <div style="font-family:var(--font-mono);font-size:13px;color:var(--ink)">${s.others.join(', ')} → ${s.primary}</div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:2px">${(state.portfolio.find(h=>bareSym(h.symbol)===s.primary)||{}).name||''}</div>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="applyCompanyLink(${i})">Link as one company</button>
+    </div>`).join('');
+  window.__linkSuggestions=list;
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-header"><div class="modal-title">Same company, two symbols?</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:12px">
+        These symbols carry an identical company name in your export, which usually means one company listed on two exchanges. Linking them combines weight, memo, news and catalysts.
+      </div>
+      ${items}
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-top:6px">
+        You can undo any link later from Tag holdings, and nothing you have written is changed either way.
+      </div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Not now</button></div>
+    </div>
+  </div>`;
+}
+function applyCompanyLink(i){
+  const s=(window.__linkSuggestions||[])[i];
+  if(!s)return;
+  s.others.forEach(o=>{
+    const t=state.tickerTags[o]||{};
+    t.sameAs=s.primary;
+    state.tickerTags[o]=t;
+  });
+  save();closeModal();render();markDirty();
+  showToast(s.others.join(', ')+' linked to '+s.primary);
 }
 
 /* ── broker CSV import ── */
@@ -2479,6 +2643,22 @@ function detectDelimiter(text){
   return tabs>commas?'\t':',';
 }
 
+/* The broker prints the currency into the Price cell, and that is the only
+   thing separating two listings of the same company: MNO is CA$1.70 on the
+   TSX-V line and 90.80p on the AIM line. Across the whole export this is
+   unambiguous — pence suffix, CA$, AU$, US$/$ and £ are the only forms. */
+function detectListing(priceCell){
+  const v=String(priceCell==null?'':priceCell).trim();
+  if(!v)return{currency:'',listing:''};
+  if(/^CA\$/i.test(v))   return{currency:'CAD',listing:'CA'};
+  if(/^AU\$/i.test(v))   return{currency:'AUD',listing:'AU'};
+  if(/^US\$/i.test(v))   return{currency:'USD',listing:'US'};
+  if(/^£/.test(v))       return{currency:'GBP',listing:'UK'};
+  if(/p$/i.test(v))      return{currency:'GBP',listing:'UK'};   // pence
+  if(/^\$/.test(v))      return{currency:'USD',listing:'US'};
+  return{currency:'',listing:''};
+}
+
 function parseCsvLine(line,delim){
   const d=delim||',';
   const parts=[];let cur='';let inQ=false;
@@ -2504,11 +2684,15 @@ function importPortfolioCsv(){
 
   // locate header row (Symbol,Name,...) and the Market Value £ column
   let headerIdx=rows.findIndex(r=>(r[0]||'').toLowerCase()==='symbol');
-  let mvCol=6; // default position of "Market Value £" in the broker export
+  let mvCol=6;     // default position of "Market Value £" in the broker export
+  let priceCol=3;  // default position of "Price" — carries the currency
   if(headerIdx>=0){
-    const hdr=rows[headerIdx].map(c=>c.toLowerCase());
+    const hdr=rows[headerIdx].map(c=>c.toLowerCase().trim());
     const found=hdr.findIndex(c=>c.includes('market value £')||c.includes('market value gbp'));
     if(found>=0)mvCol=found;
+    // exact match, so "Average Price" further along doesn't win
+    const pFound=hdr.findIndex(c=>c==='price');
+    if(pFound>=0)priceCol=pFound;
   }
   const dataRows=headerIdx>=0?rows.slice(headerIdx+1):rows;
 
@@ -2521,12 +2705,18 @@ function importPortfolioCsv(){
     if(!sym)continue;                             // totals rows have an empty symbol
     if(CURRENCY_CODES.has(sym))continue;          // skip the totals-by-currency block
     if(!/^[A-Z0-9.]{1,10}$/.test(sym))continue;   // reject phantom rows from stray delimiters
-    if(seen.has(sym))continue;                    // guard against duplicate rows
     const name=(r[1]||'').trim();
     const mv=parseMV(r[mvCol]||'');
     if(!(mv>0))continue;                          // holdings have a positive market value
-    seen.add(sym);
-    holdings.push({symbol:sym,name,mv});
+    const {currency,listing}=detectListing(r[priceCol]||'');
+    /* Two lines can legitimately share a symbol — the same company on two
+       exchanges. They differ by currency, and by value even if the broker
+       ever prints two lines in one currency. A genuinely repeated row matches
+       on all three and is still dropped. */
+    const key=sym+':'+currency+':'+mv.toFixed(2);
+    if(seen.has(key))continue;
+    seen.add(key);
+    holdings.push({symbol:sym,name,mv,currency,listing});
   }
   if(!holdings.length){showToast('No holdings found — check the paste');return;}
 
@@ -2544,6 +2734,8 @@ function importPortfolioCsv(){
   state.portfolio=holdings.map(h=>({
     symbol:h.symbol,
     name:h.name,
+    currency:h.currency,
+    listing:h.listing,
     weight_pct:denom>0?h.mv/denom:0,
   }));
   const cashVal=totalVal>0?Math.max(0,totalVal-investedTotal):0;
@@ -2556,7 +2748,9 @@ function importPortfolioCsv(){
   };
   state.portfolioSyncedAt=new Date().toISOString();
   save();closeModal();render();
-  const newUntagged=state.portfolio.filter(h=>{const t=state.tickerTags[h.symbol]||{};return!t.sector&&!t.geography;}).length;
+  const suggestions=findCompanyLinkSuggestions();
+  if(suggestions.length){setTimeout(()=>openLinkSuggestModal(suggestions),400);}
+  const newUntagged=portfolioGroups().filter(g=>{const t=state.tickerTags[g.key]||{};return!t.sector&&!t.geography;}).length;
   showToast('Imported '+holdings.length+' holdings'+(newUntagged?' — '+newUntagged+' untagged':''));
   markDirty();
 }
