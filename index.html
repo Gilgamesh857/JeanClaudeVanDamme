@@ -387,13 +387,24 @@ function save(){
 }
 load();
 
-function extractTickers(text){return[...new Set((text.match(/\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)/g)||[]).map(t=>t.toUpperCase()))];}
+/* $mno and $MNO are the same holding. Case is ignored on the way in and the
+   tag is stored uppercase, so a lowercase entry files itself correctly.
+
+   The trailing guard matters more than the case change: without it, "$Meridian"
+   used to silently produce a bogus $M tag (and, once lowercase is allowed,
+   would produce $MERID). Requiring a non-letter after the symbol means an
+   ordinary word following a $ now yields nothing at all, which is the honest
+   outcome. Amounts like $50m and CA$1.70 never matched and still don't. */
+const TICKER_RE=/\$([A-Za-z]{1,5}(?:\.[A-Za-z]{1,2})?)(?![A-Za-z0-9])/g;
+function extractTickers(text){
+  return[...new Set((String(text||'').match(TICKER_RE)||[]).map(t=>t.toUpperCase()))];
+}
 function extractHashes(text){return[...new Set((text.match(/#([a-zA-Z][a-zA-Z0-9_]*)/g)||[]).map(h=>h.toLowerCase()))];}
 function renderMd(text){
   return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\*(.+?)\*/g,'<em>$1</em>')
     .replace(/`(.+?)`/g,'<code style="font-family:var(--font-mono);font-size:12px;background:var(--surface3);padding:1px 4px;border-radius:3px">$1</code>')
-    .replace(/\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)/g,'<span style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)">$$$1</span>')
+    .replace(/\$([A-Za-z]{1,5}(?:\.[A-Za-z]{1,2})?)(?![A-Za-z0-9])/g,(m,sym)=>`<span style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)">$${sym.toUpperCase()}</span>`)
     .replace(/#([a-zA-Z][a-zA-Z0-9_]*)/g,'<span style="font-family:var(--font-mono);color:var(--hash-txt)">#$1</span>');
 }
 function highlight(text,query){
