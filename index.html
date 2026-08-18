@@ -329,7 +329,7 @@ let state={
   newsBatch:null,newsAskWindow:null,
   geminiTest:null,geminiModel:null,geminiModels:[],geminiModelsAt:null,modelsLoading:false,groundingOff:false,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
-  activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],
+  activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],stanceEditFor:null,
   activeMemoId:null
 };
 
@@ -453,6 +453,10 @@ function setTab(tab,opts){
   render();
 }
 function onSearch(){state.searchQuery=document.getElementById('searchInput').value;render();}
+function toggleStanceEdit(id){
+  state.stanceEditFor=state.stanceEditFor===id?null:id;
+  render();
+}
 function toggleFilter(type,val){
   const arr=type==='ticker'?state.filterTickers:state.filterHashes;
   const idx=arr.indexOf(val);if(idx>=0)arr.splice(idx,1);else arr.push(val);render();
@@ -509,7 +513,10 @@ function renderLog(){
   return composeHtml+entries.map(e=>renderEntry(e)).join('');
 }
 function renderEntry(e,compact=false){
-  const tickerTags=e.tickers.map(t=>`<span class="tag ticker" onclick="event.stopPropagation();goToTicker('${t}')">${t}</span>`).join('');
+  const tickerTags=e.tickers.map(t=>{
+    const badge=stanceBadge(t);
+    return `<span class="tag ticker" onclick="event.stopPropagation();goToTicker('${t}')">${t}</span>${badge?`<span style="margin-left:-2px">${badge}</span>`:''}`;
+  }).join('');
   const hashTags=e.hashes.map(h=>`<span class="tag hash" onclick="toggleFilter('hash','${h}')">${h}</span>`).join('');
   const bodyHtml=highlight(renderMd(e.text),state.searchQuery);
   if(compact)return`<div style="padding:8px 0;border-bottom:1px solid var(--border)">
@@ -527,6 +534,14 @@ function renderEntry(e,compact=false){
     </div>
     <div class="entry-body">${bodyHtml}</div>
     <div class="entry-tags">${tickerTags}${hashTags}</div>
+    ${state.stanceEditFor===e.id&&e.tickers.length?`<div style="margin-top:8px;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r)">
+      ${e.tickers.map(t=>`<div style="margin-bottom:6px">
+        <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:4px">${bareSym(t)} stance</div>
+        ${stanceChips(t,'sm')}
+      </div>`).join('')}
+      <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">Tap the active one again to clear it.</div>
+    </div>`:''}
+    ${e.tickers.length?`<button class="icon-btn" style="font-size:10px;font-family:var(--font-mono);padding:2px 0;margin-top:4px" onclick="event.stopPropagation();toggleStanceEdit('${e.id}')">${state.stanceEditFor===e.id?'▲ hide stance':'⊹ set stance'}</button>`:''}
     ${e.tickers.length?e.tickers.map(t=>{
       const s=t.replace(/^\$/,'').toUpperCase();
       const cached=state.newsCache[s];
@@ -1003,7 +1018,107 @@ function closeMemoView(){
    Every function here resolves that at READ time. No stored log entry, memo
    or portfolio row is ever rewritten, so removing a link restores the
    previous behaviour exactly. */
+/* Sector and geography names are typed by hand, so they can contain quotes,
+   ampersands and apostrophes. Interpolating them raw into an onclick attribute
+   breaks the attribute — a name containing a double quote silently produced a
+   dead, unclickable row. Escape for the JS string first, then for HTML. */
+function jsAttr(v){
+  return String(v==null?'':v)
+    .replace(/\\/g,'\\\\')
+    .replace(/'/g,"\\'")
+    .replace(/&/g,'&amp;')
+    .replace(/"/g,'&quot;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/[\r\n]/g,' ');
+}
+function htmlText(v){
+  return String(v==null?'':v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function bareSym(s){return String(s==null?'':s).replace(/^\$/,'').trim().toUpperCase();}
+
+/* ══ Stance ════════════════════════════════════════════════════════════
+   What I intend to do about a holding right now — one current value, always
+   optional. Deliberately separate from hashtags: a hashtag records what you
+   thought on a given day and stays attached forever, which is right for the
+   log and wrong for a current intention.
+
+   Stored on the company's primary symbol, so a second listing can't carry a
+   contradictory stance, and read at write-time-of-day only. Every change
+   records `since`, which is what lets the app tell you a stance has gone
+   stale rather than asking you to audit them yourself. */
+const STANCES={
+  watch: {label:'Watching',    short:'Watch',  colour:'var(--ink3)'},
+  buy:   {label:'Want to buy', short:'Buy',    colour:'var(--accent)'},
+  hold:  {label:'Hold',        short:'Hold',   colour:'var(--tag-txt)'},
+  trim:  {label:'Trim',        short:'Trim',   colour:'var(--hash-txt)'},
+  sell:  {label:'Look to sell',short:'Sell',   colour:'var(--danger)'},
+};
+const STANCE_ORDER=['buy','trim','sell','hold','watch'];
+/* How long a stance may sit untouched before it is worth a second look.
+   An intention to act decays faster than a decision to sit still. */
+const STANCE_STALE_DAYS={buy:60,trim:60,sell:45,hold:180,watch:120};
+
+function stanceFor(sym){
+  const t=state.tickerTags[primarySymbol(sym)]||{};
+  return STANCES[t.stance]?t.stance:'';
+}
+function stanceSince(sym){
+  const t=state.tickerTags[primarySymbol(sym)]||{};
+  return t.stanceSince||null;
+}
+function stanceAgeDays(sym){
+  const since=stanceSince(sym);
+  if(!since)return null;
+  return Math.floor((Date.now()-new Date(since).getTime())/86400000);
+}
+function stanceIsStale(sym){
+  const st=stanceFor(sym);if(!st)return false;
+  const age=stanceAgeDays(sym);
+  return age!=null&&age>(STANCE_STALE_DAYS[st]||90);
+}
+/* One tap, no modal, no save button. Tapping the active stance clears it —
+   nothing is ever forced, and "no stance" stays a valid resting state. */
+function setStance(sym,st){
+  const key=primarySymbol(sym);
+  const t=state.tickerTags[key]||{};
+  if(!st||t.stance===st){ delete t.stance; delete t.stanceSince; }
+  else { t.stance=st; t.stanceSince=new Date().toISOString(); }
+  state.tickerTags[key]=t;
+  if(!Object.keys(t).length)delete state.tickerTags[key];
+  save();render();markDirty();
+  showToast(t.stance?`${bareSym(key)} · ${STANCES[t.stance].label}`:`${bareSym(key)} · stance cleared`);
+}
+/* Everything carrying a stance, freshest intent first. */
+function stanceBoard(){
+  const out=[];
+  Object.keys(state.tickerTags).forEach(sym=>{
+    const st=stanceFor(sym);
+    if(!st)return;
+    if(primarySymbol(sym)!==bareSym(sym))return;   // secondaries inherit, don't duplicate
+    out.push({symbol:bareSym(sym),stance:st,since:stanceSince(sym),age:stanceAgeDays(sym),stale:stanceIsStale(sym),weight:weightFor(sym)});
+  });
+  return out.sort((a,b)=>STANCE_ORDER.indexOf(a.stance)-STANCE_ORDER.indexOf(b.stance)||b.weight-a.weight);
+}
+/* The chip row used on the ticker screen and in the log — the only UI needed
+   to maintain a stance. */
+function stanceChips(sym,size){
+  const cur=stanceFor(sym);
+  const sm=size==='sm';
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px">`+STANCE_ORDER.map(k=>{
+    const on=cur===k;const c=STANCES[k].colour;
+    return `<div class="filter-chip" onclick="event.stopPropagation();setStance('${bareSym(sym)}','${k}')"
+      style="cursor:pointer;font-size:${sm?'10px':'11px'};padding:${sm?'2px 8px':'3px 10px'};${on?`background:${c};color:#fff;border-color:${c};`:`color:${c};border-color:var(--border2);`}">${on?'✓ ':''}${sm?STANCES[k].short:STANCES[k].label}</div>`;
+  }).join('')+`</div>`;
+}
+function stanceBadge(sym){
+  const st=stanceFor(sym);if(!st)return '';
+  const c=STANCES[st].colour;
+  const stale=stanceIsStale(sym);
+  return `<span style="font-family:var(--font-mono);font-size:10px;padding:1px 7px;border-radius:20px;background:${c};color:#fff;white-space:nowrap">${STANCES[st].short}${stale?' ·⏳':''}</span>`;
+}
 
 /* The symbol a company is filed under. One hop only, so a chain can't form,
    and a mutual link resolves identically from either side rather than
@@ -1992,6 +2107,8 @@ function tickerArchive(){
     t.legs      = t.holdings.length>1?(portfolioGroups().find(g=>g.key===t.symbol)||{}).legs||[]:[];
     t.lastTouch = t.entries.length?new Date(t.entries[0].ts).getTime():0;
     // held now / watched (logged, never held) / closed (has history, not held now)
+    t.stance    = stanceFor(t.symbol);
+    t.stanceStale = stanceIsStale(t.symbol);
     t.status = t.holding ? 'held' : (t.entries.length||t.memo ? 'closed' : 'watched');
     // "closed" only makes sense if there IS history; otherwise it's just a tag with nothing behind it
     if(!t.holding && !t.entries.length && !t.memo) t.status='watched';
@@ -2001,6 +2118,11 @@ function tickerArchive(){
 
 const TICKER_FILTERS={
   all:    {label:'All',       test:()=>true},
+  buy:    {label:'Want to buy',test:t=>t.stance==='buy'},
+  trim:   {label:'Trim',      test:t=>t.stance==='trim'},
+  sell:   {label:'Look to sell',test:t=>t.stance==='sell'},
+  watch:  {label:'Watching',  test:t=>t.stance==='watch'},
+  stale:  {label:'Stale stance',test:t=>t.stanceStale},
   held:   {label:'Held',      test:t=>!!t.holding},
   closed: {label:'Not held',  test:t=>!t.holding&&(t.entries.length||t.memo)},
   memo:   {label:'Has memo',  test:t=>!!t.memo},
@@ -2008,6 +2130,10 @@ const TICKER_FILTERS={
 };
 const TICKER_SORTS={
   recent: {label:'Recent',  cmp:(a,b)=>b.lastTouch-a.lastTouch},
+  stance: {label:'Stance',  cmp:(a,b)=>{
+    const ai=a.stance?STANCE_ORDER.indexOf(a.stance):99, bi=b.stance?STANCE_ORDER.indexOf(b.stance):99;
+    return ai-bi||b.weight-a.weight;
+  }},
   weight: {label:'Weight',  cmp:(a,b)=>(b.weight-a.weight)||(b.entries.length-a.entries.length)},
   logs:   {label:'Logs',    cmp:(a,b)=>b.entries.length-a.entries.length},
   az:     {label:'A–Z',     cmp:(a,b)=>a.symbol.localeCompare(b.symbol)},
@@ -2035,14 +2161,23 @@ function renderTickers(){
 
   const counts={
     all:all.length,
+    buy:all.filter(TICKER_FILTERS.buy.test).length,
+    trim:all.filter(TICKER_FILTERS.trim.test).length,
+    sell:all.filter(TICKER_FILTERS.sell.test).length,
+    watch:all.filter(TICKER_FILTERS.watch.test).length,
+    stale:all.filter(TICKER_FILTERS.stale.test).length,
     held:all.filter(TICKER_FILTERS.held.test).length,
     closed:all.filter(TICKER_FILTERS.closed.test).length,
     memo:all.filter(TICKER_FILTERS.memo.test).length,
     nomemo:all.filter(TICKER_FILTERS.nomemo.test).length,
   };
 
+  // Stance filters only appear once a stance exists, so the row stays quiet
+  // until the feature is actually in use.
+  const stanceKeys=['buy','trim','sell','watch','stale'];
+  const filterKeys=Object.keys(TICKER_FILTERS).filter(k=>!stanceKeys.includes(k)||counts[k]);
   const filters=`<div class="filter-chip-row" style="margin-bottom:8px">
-    ${Object.keys(TICKER_FILTERS).map(k=>`<div class="filter-chip ${state.tickerFilter===k?'active':''}" onclick="setTickerFilter('${k}')">${TICKER_FILTERS[k].label}${counts[k]?` ${counts[k]}`:''}</div>`).join('')}
+    ${filterKeys.map(k=>`<div class="filter-chip ${state.tickerFilter===k?'active':''}" onclick="setTickerFilter('${k}')">${TICKER_FILTERS[k].label}${counts[k]?` ${counts[k]}`:''}</div>`).join('')}
   </div>`;
 
   const sorts=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
@@ -2070,9 +2205,10 @@ function renderTickers(){
 
     return `<div class="ticker-row" onclick="openTicker('${t.symbol}')" style="align-items:center">
       <div style="min-width:0;flex:1">
-        <div style="display:flex;align-items:baseline;gap:6px">
+        <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
           <span class="ticker-name">${t.symbol}</span>
           ${statusPill}
+          ${stanceBadge(t.symbol)}
         </div>
         ${t.name?`<div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.name}</div>`:''}
         <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);margin-top:1px">${meta}</div>
@@ -2112,6 +2248,16 @@ function renderTickerDetail(sym){
       ${statusLine}
       ${tagLine?`<span style="color:var(--hash-txt)">${tagLine}</span>`:''}
     </div>
+  </div>`;
+
+  // Stance — one tap, set from the screen you're already on
+  const stAge=stanceAgeDays(t.symbol);
+  const stanceBlock=`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div class="section-label" style="margin:0">Stance</div>
+      ${stanceFor(t.symbol)?`<div style="font-size:10px;font-family:var(--font-mono);color:${stanceIsStale(t.symbol)?'var(--warn-txt)':'var(--ink3)'}">${stAge===0?'set today':'set '+stAge+'d ago'}${stanceIsStale(t.symbol)?' · worth a look':''}</div>`:`<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">optional</div>`}
+    </div>
+    ${stanceChips(t.symbol)}
   </div>`;
 
   // Actions — go where the depth is
@@ -2166,7 +2312,7 @@ function renderTickerDetail(sym){
        </div>`
     : `<div class="news-config" style="margin-bottom:60px">No log entries for ${t.symbol} yet.</div>`;
 
-  return header+actions+memoBlock+newsBlock+logBlock;
+  return header+stanceBlock+actions+memoBlock+newsBlock+logBlock;
 }
 
 // Jump to the Log tab with the composer open and the ticker pre-typed
@@ -2242,8 +2388,8 @@ function renderPortfolio(){
   const sectorHtml=sectorRows.map(([s,w])=>{
     const on=secFilter===s;
     const grey=s==='Untagged';
-    return `<div class="ticker-row" onclick="togglePortSector('${s.replace(/'/g,"\\'")}')" style="cursor:pointer;${on?'border-color:var(--hash-txt);background:var(--hash-bg);':''}">
-      <div class="ticker-name" style="color:${grey?'var(--ink3)':'var(--hash-txt)'};min-width:80px">${on?'✓ ':''}${s}</div>
+    return `<div class="ticker-row" onclick="togglePortSector('${jsAttr(s)}')" style="cursor:pointer;${on?'border-color:var(--hash-txt);background:var(--hash-bg);':''}">
+      <div class="ticker-name" style="color:${grey?'var(--ink3)':'var(--hash-txt)'};min-width:80px">${on?'✓ ':''}${htmlText(s)}</div>
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxSec*100)}%;background:${grey?'var(--ink3)':'var(--hash-txt)'}"></div></div>
       <div class="ticker-count">${(w*100).toFixed(1)}%</div>
     </div>`;
@@ -2251,8 +2397,8 @@ function renderPortfolio(){
 
   const geoHtml=geoRows.map(([g,w])=>{
     const on=geoFilter===g;
-    return `<div class="ticker-row" onclick="togglePortGeo('${g.replace(/'/g,"\\'")}')" style="cursor:pointer;${on?'border-color:var(--accent);background:var(--accent2);':''}">
-      <div class="ticker-name" style="min-width:80px">${on?'✓ ':''}${g}</div>
+    return `<div class="ticker-row" onclick="togglePortGeo('${jsAttr(g)}')" style="cursor:pointer;${on?'border-color:var(--accent);background:var(--accent2);':''}">
+      <div class="ticker-name" style="min-width:80px">${on?'✓ ':''}${htmlText(g)}</div>
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(w/maxGeo*100)}%"></div></div>
       <div class="ticker-count">${(w*100).toFixed(1)}%</div>
     </div>`;
@@ -2327,7 +2473,7 @@ function renderPortfolio(){
       : (legLine||`<div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${tagLine}</div>`);
     return`<div class="ticker-row" onclick="${clickAction}" style="${isSel?'border-color:var(--accent);background:var(--accent2);':''}">
       ${selMode?`<div style="width:20px;height:20px;border-radius:5px;border:2px solid ${isSel?'var(--accent)':'var(--border2)'};background:${isSel?'var(--accent)':'transparent'};display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;margin-right:8px;flex-shrink:0">${isSel?'✓':''}</div>`:''}
-      <div style="min-width:52px;flex-shrink:0"><div class="ticker-name">${h.symbol}</div>${subLine}</div>
+      <div style="min-width:52px;flex-shrink:0"><div class="ticker-name" style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">${h.symbol}${stanceBadge(h.symbol)}</div>${subLine}</div>
       <div class="bar-bg"><div class="bar-fill" style="width:${Math.round(parseFloat(h.weight_pct||0)/maxW*100)}%"></div></div>
       <div style="text-align:right;min-width:52px"><div class="ticker-count">${wPct}%</div></div>
     </div>`;
@@ -2628,8 +2774,11 @@ function openPortfolioPaste(){
     <div class="modal">
       <div class="modal-header"><div class="modal-title">Update portfolio</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
       <div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:12px">
-        Paste your broker CSV export below — <strong>exactly as downloaded</strong>, header and totals included. Your sector/geography tags are kept between updates.
+        Choose the CSV your broker downloaded, or paste it below — <strong>exactly as downloaded</strong>, header and totals included. Your tags and stances are kept between updates.
       </div>
+      <input type="file" id="portfolioCsvFile" accept=".csv,.txt,text/csv,text/plain" style="display:none" onchange="loadCsvFile(event)">
+      <button class="btn btn-ghost" style="width:100%;margin-bottom:6px" onclick="document.getElementById('portfolioCsvFile').click()">📄 Choose CSV file</button>
+      <div id="csvFileNote" style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">or paste below</div>
       <textarea id="portfolioCsvInput" style="width:100%;min-height:120px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:12px;font-family:var(--font-mono);color:var(--ink);background:var(--surface2);outline:none;resize:vertical" placeholder="Symbol,Name,Qty,Price,..."></textarea>
       <div class="field-row" style="margin-top:10px">
         <div class="field-label">Total portfolio value £ <span style="opacity:.5">(optional — for cash %)</span></div>
@@ -2641,6 +2790,44 @@ function openPortfolioPaste(){
       </div>
     </div>
   </div>`;
+}
+
+/* Reading a file changes nothing about parsing — the text lands in the same
+   textarea and goes through the same importer, so the file path cannot drift
+   from the paste path. The only new risk is reading the wrong file or a file
+   that isn't the export at all, so both are checked before anything is
+   imported, and the text stays visible for you to see what was loaded. */
+function loadCsvFile(ev){
+  const file=ev&&ev.target&&ev.target.files&&ev.target.files[0];
+  if(!file)return;
+  const note=document.getElementById('csvFileNote');
+  const say=(msg,colour)=>{if(note){note.textContent=msg;note.style.color=colour||'var(--ink3)';}};
+
+  if(file.size>5*1024*1024){say('That file is over 5MB — is it the right one?','var(--danger)');ev.target.value='';return;}
+  if(/\.(xlsx|xls|numbers|pdf|zip)$/i.test(file.name)){
+    say('That looks like a spreadsheet, not a CSV. Export as CSV first.','var(--danger)');
+    ev.target.value='';return;
+  }
+  say('Reading '+file.name+'…');
+  const reader=new FileReader();
+  reader.onerror=()=>{say('Could not read that file — try pasting instead','var(--danger)');ev.target.value='';};
+  reader.onload=()=>{
+    let text=String(reader.result||'').replace(/[\uFEFF\u200B\u200C\u200D]/g,'').trim();
+    if(!text){say('That file is empty','var(--danger)');ev.target.value='';return;}
+    // Binary sniff: a real CSV has no NUL bytes.
+    if(text.indexOf('\u0000')>=0){say('That is not a text file — export as CSV','var(--danger)');ev.target.value='';return;}
+    // Shape check: must look like the broker export before we accept it.
+    const first=text.split(/\r?\n/).slice(0,6).join('\n').toLowerCase();
+    if(!/symbol/.test(first)||!/(market value|price)/.test(first)){
+      say('No Symbol/Price header found — is this the holdings export?','var(--danger)');
+      // Still load it, so you can look at it and decide — but it is flagged.
+    }else{
+      say('Loaded '+file.name+' — check it below, then Import','var(--accent)');
+    }
+    const ta=document.getElementById('portfolioCsvInput');
+    if(ta)ta.value=text;
+  };
+  reader.readAsText(file);
 }
 
 function detectDelimiter(text){
@@ -2760,7 +2947,12 @@ function importPortfolioCsv(){
   state.portfolioSyncedAt=new Date().toISOString();
   save();closeModal();render();
   const suggestions=findCompanyLinkSuggestions();
-  if(suggestions.length){setTimeout(()=>openLinkSuggestModal(suggestions),400);}
+  if(suggestions.length){setTimeout(()=>{
+    // Only if nothing else has been opened in the meantime — a delayed modal
+    // must never overwrite one the user deliberately opened.
+    const root=document.getElementById('modalRoot');
+    if(root&&!root.innerHTML.trim())openLinkSuggestModal(suggestions);
+  },400);}
   const newUntagged=portfolioGroups().filter(g=>{const t=state.tickerTags[g.key]||{};return!t.sector&&!t.geography;}).length;
   showToast('Imported '+holdings.length+' holdings'+(newUntagged?' — '+newUntagged+' untagged':''));
   markDirty();
