@@ -239,6 +239,14 @@
 <div id="modalRoot"></div>
 <script>
 const STORAGE_KEY='invest_diary_v2';
+
+/* Account definitions live here because the initial state references them. */
+const ACCOUNTS=[
+  {id:'gilgamesh',label:'Gilgamesh'},
+  {id:'odyssey',  label:'Odyssey'},
+];
+const DEFAULT_ACCOUNT='gilgamesh';
+
 const MEMO_SECTIONS=['thesis','risks','catalysts','management','funding','valuation','technicals','reasons_to_sell','description'];
 
 /* Parse a fuzzy timing phrase into a sortable anchor date.
@@ -320,7 +328,7 @@ const SECTION_LABELS={thesis:'Investment Thesis',risks:'Risks',catalysts:'Cataly
 let state={
   entries:[],memos:[],
   driveFileId:null,driveSynced:false,driveToken:null,
-  sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,
+  sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,activeAccount:DEFAULT_ACCOUNT,
   tickerTags:{},portSelectMode:false,portSelected:{},
   lastLocalChange:0,dirty:false,lastSyncedAt:null,lastSyncRemoteTime:null,lastSeenDriveModified:null,syncConflict:null,
   portSectorFilter:null,portGeoFilter:null,portView:'holdings',portSort:'weight',
@@ -342,6 +350,8 @@ function load(){
       state.driveFileId=s.driveFileId||null;
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
+      state.activeAccount=s.activeAccount||DEFAULT_ACCOUNT;
+      migratePortfolioToAccounts();
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.dirty=!!s.dirty;
       state.lastSyncedAt=s.lastSyncedAt||null;
@@ -375,7 +385,7 @@ function save(){
   localStorage.setItem(STORAGE_KEY,JSON.stringify({
     entries:state.entries,memos:state.memos,driveFileId:state.driveFileId,
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
-    portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,
+    portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,activeAccount:state.activeAccount,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
     dirty:state.dirty,lastSyncedAt:state.lastSyncedAt,lastSyncRemoteTime:state.lastSyncRemoteTime,
     lastSeenDriveModified:state.lastSeenDriveModified,syncConflict:state.syncConflict,
@@ -1050,16 +1060,17 @@ function bareSym(s){return String(s==null?'':s).replace(/^\$/,'').trim().toUpper
    records `since`, which is what lets the app tell you a stance has gone
    stale rather than asking you to audit them yourself. */
 const STANCES={
-  watch: {label:'Watching',    short:'Watch',  colour:'var(--ink3)'},
-  buy:   {label:'Want to buy', short:'Buy',    colour:'var(--accent)'},
-  hold:  {label:'Hold',        short:'Hold',   colour:'var(--tag-txt)'},
-  trim:  {label:'Trim',        short:'Trim',   colour:'var(--hash-txt)'},
-  sell:  {label:'Look to sell',short:'Sell',   colour:'var(--danger)'},
+  watch:    {label:'Watching',    short:'Watch', colour:'var(--ink3)'},
+  research: {label:'Research',    short:'Rsrch', colour:'var(--hash-txt)'},
+  buy:      {label:'Want to buy', short:'Buy',   colour:'var(--accent)'},
+  hold:     {label:'Hold',        short:'Hold',  colour:'var(--tag-txt)'},
+  trim:     {label:'Trim',        short:'Trim',  colour:'var(--hash-txt)'},
+  sell:     {label:'Look to sell',short:'Sell',  colour:'var(--danger)'},
 };
-const STANCE_ORDER=['buy','trim','sell','hold','watch'];
+const STANCE_ORDER=['research','buy','trim','sell','hold','watch'];
 /* How long a stance may sit untouched before it is worth a second look.
    An intention to act decays faster than a decision to sit still. */
-const STANCE_STALE_DAYS={buy:60,trim:60,sell:45,hold:180,watch:120};
+const STANCE_STALE_DAYS={research:30,buy:60,trim:60,sell:45,hold:180,watch:120};
 
 function stanceFor(sym){
   const t=state.tickerTags[primarySymbol(sym)]||{};
@@ -1098,7 +1109,7 @@ function stanceBoard(){
     const st=stanceFor(sym);
     if(!st)return;
     if(primarySymbol(sym)!==bareSym(sym))return;   // secondaries inherit, don't duplicate
-    out.push({symbol:bareSym(sym),stance:st,since:stanceSince(sym),age:stanceAgeDays(sym),stale:stanceIsStale(sym),weight:weightFor(sym)});
+    out.push({symbol:bareSym(sym),stance:st,since:stanceSince(sym),age:stanceAgeDays(sym),stale:stanceIsStale(sym),weight:weightFor(sym,'all'),accountWeights:weightsByAccount(sym)});
   });
   return out.sort((a,b)=>STANCE_ORDER.indexOf(a.stance)-STANCE_ORDER.indexOf(b.stance)||b.weight-a.weight);
 }
@@ -1135,33 +1146,92 @@ function primarySymbol(sym){
 }
 function sameCompany(a,b){return primarySymbol(a)===primarySymbol(b);}
 
-/* Every portfolio line belonging to one company — one per listing. */
-function holdingsFor(sym){
+/* Every portfolio line belonging to one company — one per listing. Scoped to
+   the account in view unless explicitly asked for 'all'. */
+function holdingsFor(sym,acct){
   const p=primarySymbol(sym);
-  return state.portfolio.filter(h=>primarySymbol(h.symbol)===p);
+  return accountRows(acct===undefined?activeAccount():acct).filter(h=>primarySymbol(h.symbol)===p);
 }
+/* ══ Accounts ══════════════════════════════════════════════════════════
+   Two wrappers with different jobs, so weights are NEVER combined: each is
+   a percentage of its own account. A holding that is 3% of Gilgamesh and 1%
+   of Odyssey is two separate facts, and mixing them would destroy exactly
+   the mental accounting the two accounts exist to keep apart.
+
+   Market value is stored per row and weight derived at read time. That is
+   what makes per-account weights possible at all — a stored percentage is
+   relative to whatever the account happened to hold on import day, and
+   cannot be recomputed. */
+function accountLabel(id){const a=ACCOUNTS.find(x=>x.id===id);return a?a.label:id;}
+function activeAccount(){
+  return ACCOUNTS.some(a=>a.id===state.activeAccount)?state.activeAccount:DEFAULT_ACCOUNT;
+}
+function setAccount(id){
+  if(!ACCOUNTS.some(a=>a.id===id))return;
+  state.activeAccount=id;
+  state.portSelected={};state.portSelectMode=false;   // selection is per account
+  save();render();
+}
+/* Rows in one account, or every row when passed 'all'. */
+function accountRows(acct){
+  if(acct==='all')return state.portfolio;
+  return state.portfolio.filter(h=>(h.account||DEFAULT_ACCOUNT)===acct);
+}
+function rowValue(h){return parseFloat(h&&h.mv)||0;}
+/* The denominator: what this account actually holds. Derived, never stored,
+   so it stays true after any edit or partial re-import. */
+function investedFor(acct){
+  return accountRows(acct).reduce((t,h)=>t+rowValue(h),0);
+}
+function metaFor(acct){
+  const m=state.portfolioMeta;
+  if(!m)return null;
+  return m[acct||activeAccount()]||null;
+}
+function accountIsPopulated(acct){return accountRows(acct).length>0;}
+/* Only show the account switcher once there is something to switch to. */
+function accountsInUse(){
+  const used=ACCOUNTS.filter(a=>accountIsPopulated(a.id));
+  return used.length?used:[ACCOUNTS[0]];
+}
+
 /* The largest single line, for anything that needs one representative row
    (a company name, a broker label). Never used for weight. */
-function holdingFor(sym){
-  const l=holdingsFor(sym);
+function holdingFor(sym,acct){
+  const l=holdingsFor(sym,acct);
   if(!l.length)return null;
-  return l.slice().sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0))[0];
+  return l.slice().sort((a2,b2)=>rowValue(b2)-rowValue(a2))[0];
 }
-/* Combined weight across every listing. This is what the portfolio means. */
-function weightFor(sym){
-  return holdingsFor(sym).reduce((t,h)=>t+(parseFloat(h.weight_pct)||0),0);
+/* Weight within ONE account: this company's value across its listings, over
+   what that account holds. Two listings of one company combine; two accounts
+   never do. */
+function weightFor(sym,acct){
+  const a=acct===undefined?activeAccount():acct;
+  const denom=investedFor(a);
+  if(!(denom>0))return 0;
+  return holdingsFor(sym,a).reduce((t,h)=>t+rowValue(h),0)/denom;
+}
+/* Where a company is held, and at what weight in each — for anything that
+   needs to show both without implying a combined figure. */
+function weightsByAccount(sym){
+  return ACCOUNTS
+    .filter(a=>holdingsFor(sym,a.id).length)
+    .map(a=>({id:a.id,label:a.label,weight:weightFor(sym,a.id)}));
 }
 /* One entry per company held, with its individual lines kept intact. */
-function portfolioGroups(){
+function portfolioGroups(acct){
+  const a=acct===undefined?activeAccount():acct;
+  const denom=investedFor(a);
   const map={};
-  state.portfolio.forEach(h=>{
+  accountRows(a).forEach(h=>{
     const key=primarySymbol(h.symbol);
-    if(!map[key])map[key]={key,symbol:key,rows:[],weight_pct:0};
+    if(!map[key])map[key]={key,symbol:key,rows:[],mv:0,weight_pct:0,account:a};
     map[key].rows.push(h);
-    map[key].weight_pct+=parseFloat(h.weight_pct)||0;
+    map[key].mv+=rowValue(h);
   });
   return Object.values(map).map(g=>{
-    const biggest=g.rows.slice().sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0))[0];
+    g.weight_pct=denom>0?g.mv/denom:0;
+    const biggest=g.rows.slice().sort((a2,b2)=>rowValue(b2)-rowValue(a2))[0];
     g.name=lookupCompanyName(g.key)||biggest.name||'';
     g.multi=g.rows.length>1;
     /* What is actually held, spelled out. If every line carries the filing
@@ -1171,10 +1241,35 @@ function portfolioGroups(){
     const allSameSym=g.rows.every(r=>bareSym(r.symbol)===g.key);
     g.legs=g.rows
       .slice()
-      .sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0))
+      .sort((a2,b2)=>rowValue(b2)-rowValue(a2))
       .map(r=>allSameSym?(r.listing||'?'):(bareSym(r.symbol)+(r.listing?' '+r.listing:'')));
     return g;
   });
+}
+
+/* Older saves stored a frozen weight_pct and no account. Rebuild market value
+   from it so weights recompute identically, and file everything under the
+   primary account. Ratio-preserving: if the invested total is unknown, any
+   consistent basis yields the same percentages. */
+function migratePortfolioToAccounts(){
+  if(!Array.isArray(state.portfolio))state.portfolio=[];
+  // portfolioMeta used to be a single flat object
+  if(state.portfolioMeta&&typeof state.portfolioMeta==='object'&&!ACCOUNTS.some(a=>state.portfolioMeta[a.id])){
+    if('investedValue' in state.portfolioMeta||'totalValue' in state.portfolioMeta){
+      state.portfolioMeta={[DEFAULT_ACCOUNT]:state.portfolioMeta};
+    }
+  }
+  const legacyInvested=(metaFor(DEFAULT_ACCOUNT)||{}).investedValue||0;
+  let changed=false;
+  state.portfolio.forEach(h=>{
+    if(!h.account){h.account=DEFAULT_ACCOUNT;changed=true;}
+    if(h.mv===undefined||h.mv===null||!(parseFloat(h.mv)>0)){
+      const w=parseFloat(h.weight_pct)||0;
+      h.mv=w*(legacyInvested>0?legacyInvested:1000000);
+      changed=true;
+    }
+  });
+  return changed;
 }
 
 // Open memo from ticker chip in log
@@ -1194,9 +1289,9 @@ function openTickerMemo(ticker){
   if(memo){setTab('memos',{memoId:memo.id});return;}
   const bare=bareSym(ticker);
   const name=lookupCompanyName(bare);
-  const w=weightFor(bare);
+  const ws=weightsByAccount(bare);
   const tag=state.tickerTags[bare]||{};
-  const weightLine=w>0?`<span style="font-family:var(--font-mono);font-size:12px;color:var(--ink3)">${(w*100).toFixed(1)}% of portfolio</span>`:'';
+  const weightLine=ws.length?`<span style="font-family:var(--font-mono);font-size:12px;color:var(--ink3)">${ws.map(a=>`${(a.weight*100).toFixed(1)}% of ${a.label}`).join(' · ')}</span>`:'';
   const tagLine=[tag.sector,tag.geography].filter(Boolean).join(' · ');
   const root=document.getElementById('modalRoot');
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -1329,9 +1424,11 @@ function newsUniverse(){
   const map={};
   // One entry per company, not per listing — a second listing is not a
   // second search, and the free tier only allows ~20 grounded calls a day.
-  portfolioGroups().forEach(g=>{
-    map[g.key]={symbol:g.key,inPortfolio:true,weight:g.weight_pct||0};
-  });
+  // Both accounts are covered; weight here only orders the queue.
+  ACCOUNTS.forEach(a=>portfolioGroups(a.id).forEach(g=>{
+    const prev=map[g.key];
+    map[g.key]={symbol:g.key,inPortfolio:true,weight:Math.max(prev?prev.weight:0,g.weight_pct||0)};
+  }));
   state.entries.forEach(e=>{
     e.tickers.forEach(t=>{
       const s=primarySymbol(t);
@@ -1348,14 +1445,15 @@ function newsUniverse(){
 function tickerContext(symbol){
   const s=primarySymbol(symbol);
   const tag=state.tickerTags[s]||{};
-  const holding=holdingFor(s);
+  const holding=holdingFor(s,'all');
   const memo=state.memos.find(m=>sameCompany(m.ticker,s));
   return {
     symbol:s,
     legalName: tag.legalName||tag.name||(holding?holding.name:'')||'',
     sector:    tag.sector||'',
     geography: tag.geography||'',
-    weight:    weightFor(s),
+    weight:    weightFor(s,activeAccount()),
+    accountWeights: weightsByAccount(s),
     inPortfolio: !!holding,
     memo,
     thesis:    memo&&memo.sections?(memo.sections.thesis||''):'',
@@ -1929,7 +2027,7 @@ function renderNews(){
     const c=state.newsCache[t.symbol];
     const loading=!!state.newsLoading[t.symbol];
     const tag=state.tickerTags[t.symbol]||{};
-    const holding=holdingFor(t.symbol);
+    const holding=holdingFor(t.symbol,'all');
     const name=tag.legalName||tag.name||(holding?holding.name:'')||'';
 
     let right,statusLine;
@@ -2090,7 +2188,7 @@ function tickerArchive(){
   state.entries.forEach(e=>{
     e.tickers.forEach(t=>{ touch(t).entries.push(e); });
   });
-  state.portfolio.forEach(h=>{ const t=touch(h.symbol); t.holdings.push(h); });
+  accountRows('all').forEach(h=>{ const t=touch(h.symbol); t.holdings.push(h); });
   state.memos.forEach(m=>{ touch(m.ticker).memo=m; });
   Object.keys(state.newsCache).forEach(s=>{ touch(s).news=state.newsCache[s]; });
   Object.keys(state.tickerTags).forEach(s=>{ touch(s); });
@@ -2101,10 +2199,17 @@ function tickerArchive(){
     t.name      = tag.name||tag.legalName||(t.holding?t.holding.name:'')||'';
     t.sector    = tag.sector||'';
     t.geography = tag.geography||'';
-    t.holdings.sort((a,b)=>(parseFloat(b.weight_pct)||0)-(parseFloat(a.weight_pct)||0));
+    t.holdings.sort((a,b)=>rowValue(b)-rowValue(a));
     t.holding   = t.holdings[0]||null;
-    t.weight    = weightFor(t.symbol);
-    t.legs      = t.holdings.length>1?(portfolioGroups().find(g=>g.key===t.symbol)||{}).legs||[]:[];
+    /* Weights stay per account — never summed. `weight` is this company's
+       weight in the account currently in view (or its largest, if it isn't
+       held there), used only for sorting and the list pill. */
+    t.accountWeights = weightsByAccount(t.symbol);
+    t.weight = weightFor(t.symbol,activeAccount())
+      || (t.accountWeights.length?Math.max(...t.accountWeights.map(a=>a.weight)):0);
+    const grp=portfolioGroups(activeAccount()).find(g=>g.key===t.symbol)
+      ||portfolioGroups(t.accountWeights[0]?t.accountWeights[0].id:activeAccount()).find(g=>g.key===t.symbol);
+    t.legs = (grp&&grp.rows.length>1)?grp.legs:[];
     t.lastTouch = t.entries.length?new Date(t.entries[0].ts).getTime():0;
     // held now / watched (logged, never held) / closed (has history, not held now)
     t.stance    = stanceFor(t.symbol);
@@ -2118,6 +2223,7 @@ function tickerArchive(){
 
 const TICKER_FILTERS={
   all:    {label:'All',       test:()=>true},
+  research:{label:'Research',  test:t=>t.stance==='research'},
   buy:    {label:'Want to buy',test:t=>t.stance==='buy'},
   trim:   {label:'Trim',      test:t=>t.stance==='trim'},
   sell:   {label:'Look to sell',test:t=>t.stance==='sell'},
@@ -2161,6 +2267,7 @@ function renderTickers(){
 
   const counts={
     all:all.length,
+    research:all.filter(TICKER_FILTERS.research.test).length,
     buy:all.filter(TICKER_FILTERS.buy.test).length,
     trim:all.filter(TICKER_FILTERS.trim.test).length,
     sell:all.filter(TICKER_FILTERS.sell.test).length,
@@ -2174,7 +2281,7 @@ function renderTickers(){
 
   // Stance filters only appear once a stance exists, so the row stays quiet
   // until the feature is actually in use.
-  const stanceKeys=['buy','trim','sell','watch','stale'];
+  const stanceKeys=['research','buy','trim','sell','watch','stale'];
   const filterKeys=Object.keys(TICKER_FILTERS).filter(k=>!stanceKeys.includes(k)||counts[k]);
   const filters=`<div class="filter-chip-row" style="margin-bottom:8px">
     ${filterKeys.map(k=>`<div class="filter-chip ${state.tickerFilter===k?'active':''}" onclick="setTickerFilter('${k}')">${TICKER_FILTERS[k].label}${counts[k]?` ${counts[k]}`:''}</div>`).join('')}
@@ -2189,7 +2296,7 @@ function renderTickers(){
 
   const rows=list.map(t=>{
     const statusPill = t.holding
-      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--accent)">${(t.weight*100).toFixed(1)}%</span>`
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--accent)">${t.accountWeights.map(a=>`${(a.weight*100).toFixed(1)}%${t.accountWeights.length>1?' '+a.label.slice(0,3):''}`).join(' · ')}</span>`
       : (t.entries.length||t.memo)
         ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">not held</span>`
         : `<span style="font-family:var(--font-mono);font-size:10px;color:var(--ink3)">—</span>`;
@@ -2233,7 +2340,7 @@ function renderTickerDetail(sym){
 
   // Header
   const statusLine=t.holding
-    ? `<span style="color:var(--accent)">${(t.weight*100).toFixed(1)}% of portfolio${t.legs.length?` <span style="color:var(--ink3)">(${t.legs.join(' · ')})</span>`:''}</span>`
+    ? `<span style="color:var(--accent)">${t.accountWeights.map(a=>`${(a.weight*100).toFixed(1)}% of ${a.label}`).join(' · ')}${t.legs.length?` <span style="color:var(--ink3)">(${t.legs.join(' · ')})</span>`:''}</span>`
     : (t.entries.length||t.memo)
       ? `<span style="color:var(--ink3)">not currently held</span>`
       : `<span style="color:var(--ink3)">no position</span>`;
@@ -2338,13 +2445,17 @@ function filterByHash(h){state.filterHashes=[h];state.filterTickers=[];setTab('l
    PORTFOLIO TAB
 ══════════════════════════════════════ */
 function renderPortfolio(){
-  const p=state.portfolio;
+  const p=accountRows(activeAccount());
   const syncedAt=state.portfolioSyncedAt?'Updated '+fmtDateRelative(state.portfolioSyncedAt):'Never synced';
   const connectBtn=`<button class="weekly-digest-btn" onclick="openPortfolioPaste()" style="margin-bottom:12px">↓ Paste broker CSV update</button>`;
   const syncInfo=state.portfolioSyncedAt?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${syncedAt}</div>`:'';
 
   if(!p.length){
-    return connectBtn+`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">No portfolio data</div><div class="empty-body">Paste your broker CSV export — exactly as downloaded, no editing needed.</div></div>`;
+    const other=ACCOUNTS.filter(a=>a.id!==activeAccount()&&accountIsPopulated(a.id));
+    const switchBack=other.length
+      ? `<div style="margin-top:14px">${other.map(a=>`<button class="btn btn-ghost btn-sm" onclick="setAccount('${a.id}')">Switch to ${a.label}</button>`).join(' ')}</div>`
+      : '';
+    return connectBtn+`<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-title">${other.length?accountLabel(activeAccount())+' is empty':'No portfolio data'}</div><div class="empty-body">Paste your broker CSV export — exactly as downloaded, no editing needed.${other.length?'<br>Choose the account in the import box.':''}</div>${switchBack}</div>`;
   }
 
   const viewToggle=`<div style="display:flex;gap:4px;margin-bottom:14px">
@@ -2352,7 +2463,20 @@ function renderPortfolio(){
     <div class="filter-chip ${state.portView==='catalysts'?'active':''}" onclick="setPortView('catalysts')">Catalyst timeline</div>
   </div>`;
 
-  if(state.portView==='catalysts')return connectBtn+viewToggle+renderCatalystTimeline();
+  // Account switcher — only once a second account has anything in it, so the
+  // single-account case looks exactly as it did before.
+  const accTabs=accountsInUse().length>1||ACCOUNTS.some(a=>accountIsPopulated(a.id)&&a.id!==DEFAULT_ACCOUNT)
+    ? `<div style="display:flex;gap:6px;margin-bottom:12px">${ACCOUNTS.map(a=>{
+        const on=activeAccount()===a.id;
+        const inv=investedFor(a.id);
+        return `<div onclick="setAccount('${a.id}')" style="flex:1;text-align:center;cursor:pointer;padding:8px 6px;border-radius:var(--r);border:1px solid ${on?'var(--accent)':'var(--border2)'};background:${on?'var(--accent2)':'transparent'}">
+          <div style="font-family:var(--font-serif);font-size:14px;color:${on?'var(--accent)':'var(--ink2)'}">${a.label}</div>
+          <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${inv>0?'£'+Math.round(inv).toLocaleString('en-GB'):'empty'}</div>
+        </div>`;
+      }).join('')}</div>`
+    : '';
+
+  if(state.portView==='catalysts')return connectBtn+accTabs+viewToggle+renderCatalystTimeline();
 
   // One row per company — a second listing adds to the weight, it does not
   // add a row. The individual lines stay visible in the `legs` label.
@@ -2362,9 +2486,9 @@ function renderPortfolio(){
   });
 
   // summary cards
-  const meta=state.portfolioMeta;
+  const meta=metaFor(activeAccount());
   const summaryHtml=meta&&meta.totalValue?`<div class="analytics-grid" style="margin-bottom:16px">
-    <div class="metric-card"><div class="metric-label">Total portfolio</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.totalValue).toLocaleString('en-GB')}</div></div>
+    <div class="metric-card"><div class="metric-label">${accountsInUse().length>1?accountLabel(activeAccount()):'Total portfolio'}</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.totalValue).toLocaleString('en-GB')}</div></div>
     <div class="metric-card"><div class="metric-label">Invested</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.investedValue||0).toLocaleString('en-GB')}</div></div>
     <div class="metric-card"><div class="metric-label">Cash</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.cashGbp||0).toLocaleString('en-GB')}</div></div>
     <div class="metric-card"><div class="metric-label">Cash %</div><div class="metric-value" style="font-size:18px">${((meta.cashPct||0)*100).toFixed(1)}%</div></div>
@@ -2487,7 +2611,7 @@ function renderPortfolio(){
     </div>
   </div>`;
 
-  return connectBtn+viewToggle+syncInfo+summaryHtml+
+  return connectBtn+accTabs+viewToggle+syncInfo+summaryHtml+
     `<div class="section-label">Sector</div><div class="ticker-list" style="margin-bottom:16px">${sectorHtml}</div>`+
     geoSection+
     `<div class="section-label">Holdings (${sorted.length}${activeFilters.length?` of ${rows.length}`:''}${p.length>rows.length?` · ${p.length} listings`:''}) — by ${state.portSort==='catalyst'?'next catalyst':'weight'}</div>`+
@@ -2522,7 +2646,7 @@ function renderCatalystTimeline(){
       if(cat.done)return;
       all.push({
         ticker:m.ticker.replace(/^\$/,''),
-        weight:weightFor(m.ticker),
+        weight:weightFor(m.ticker,activeAccount())||weightFor(m.ticker,'all'),
         text:cat.text, timing:cat.timing, start:cat.start, end:cat.end,
       });
     });
@@ -2615,7 +2739,7 @@ function selectUntaggedHoldings(){
 }
 function allPortfolioSymbols(){
   const set=new Set();
-  state.portfolio.forEach(h=>set.add(bareSym(h.symbol)));
+  accountRows('all').forEach(h=>set.add(bareSym(h.symbol)));
   Object.keys(state.tickerTags).forEach(s=>set.add(bareSym(s)));
   return [...set].sort();
 }
@@ -2714,7 +2838,7 @@ function applyTags(){
    is exact on the normalised name, so it stays conservative. */
 function findCompanyLinkSuggestions(){
   const byName={};
-  state.portfolio.forEach(h=>{
+  accountRows('all').forEach(h=>{
     const n=String(h.name||'').toLowerCase().replace(/\s+/g,' ').trim();
     if(!n)return;
     const sym=bareSym(h.symbol);
@@ -2728,7 +2852,7 @@ function findCompanyLinkSuggestions(){
     // already linked to each other? nothing to suggest
     const primaries=new Set(syms.map(primarySymbol));
     if(primaries.size<2)return;
-    syms.sort((a,b)=>weightFor(b)-weightFor(a));
+    syms.sort((a,b)=>weightFor(b,'all')-weightFor(a,'all'));
     out.push({primary:syms[0],others:syms.slice(1),name:n});
   });
   return out;
@@ -2737,7 +2861,7 @@ function openLinkSuggestModal(list){
   const root=document.getElementById('modalRoot');
   const items=list.map((s,i)=>`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-bottom:8px">
       <div style="font-family:var(--font-mono);font-size:13px;color:var(--ink)">${s.others.join(', ')} → ${s.primary}</div>
-      <div style="font-size:11px;color:var(--ink3);margin-top:2px">${(state.portfolio.find(h=>bareSym(h.symbol)===s.primary)||{}).name||''}</div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:2px">${(accountRows('all').find(h=>bareSym(h.symbol)===s.primary)||{}).name||''}</div>
       <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="applyCompanyLink(${i})">Link as one company</button>
     </div>`).join('');
   window.__linkSuggestions=list;
@@ -2773,6 +2897,15 @@ function openPortfolioPaste(){
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal">
       <div class="modal-header"><div class="modal-title">Update portfolio</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div class="field-row">
+        <div class="field-label">Account</div>
+        <select class="field-input" id="portfolioAccountSelect" style="font-family:var(--font-body)">
+          ${ACCOUNTS.map(a=>`<option value="${a.id}" ${activeAccount()===a.id?'selected':''}>${a.label}${accountIsPopulated(a.id)?` — ${accountRows(a.id).length} listings, updated ${(metaFor(a.id)||{}).snapshotDate||'—'}`:' — empty'}</option>`).join('')}
+        </select>
+      </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin:-4px 0 10px">
+        Only this account is replaced. The other is left exactly as it is.
+      </div>
       <div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:12px">
         Choose the CSV your broker downloaded, or paste it below — <strong>exactly as downloaded</strong>, header and totals included. Your tags and stances are kept between updates.
       </div>
@@ -2782,10 +2915,11 @@ function openPortfolioPaste(){
       <textarea id="portfolioCsvInput" style="width:100%;min-height:120px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:12px;font-family:var(--font-mono);color:var(--ink);background:var(--surface2);outline:none;resize:vertical" placeholder="Symbol,Name,Qty,Price,..."></textarea>
       <div class="field-row" style="margin-top:10px">
         <div class="field-label">Total portfolio value £ <span style="opacity:.5">(optional — for cash %)</span></div>
-        <input class="field-input" id="portfolioTotalInput" type="number" placeholder="347987" value="${state.portfolioMeta&&state.portfolioMeta.totalValue?state.portfolioMeta.totalValue:''}">
+        <input class="field-input" id="portfolioTotalInput" type="number" placeholder="347987" value="${(metaFor(activeAccount())||{}).totalValue||''}">
       </div>
-      <div class="modal-footer">
+      <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        ${ACCOUNTS.filter(a=>accountIsPopulated(a.id)).length>1||accountIsPopulated('odyssey')?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearAccount()">Close account</button>`:''}
         <button class="btn btn-primary" onclick="importPortfolioCsv()">Import</button>
       </div>
     </div>
@@ -2830,6 +2964,23 @@ function loadCsvFile(ev){
   reader.readAsText(file);
 }
 
+/* Emptying an account has to be deliberate: an import with no holdings is
+   refused, because that is far more likely to be the wrong file than a real
+   instruction to wipe a wrapper. This is the explicit route. */
+function clearAccount(){
+  const sel=document.getElementById('portfolioAccountSelect');
+  const acct=ACCOUNTS.some(a=>a.id===(sel&&sel.value))?sel.value:activeAccount();
+  const n=accountRows(acct).length;
+  if(!n){showToast(accountLabel(acct)+' is already empty');return;}
+  if(!confirm(`Remove all ${n} ${accountLabel(acct)} listings? Your memos, tags and stances are kept.`))return;
+  state.portfolio=state.portfolio.filter(h=>(h.account||DEFAULT_ACCOUNT)!==acct);
+  if(state.portfolioMeta)delete state.portfolioMeta[acct];
+  const other=ACCOUNTS.find(a=>accountIsPopulated(a.id));
+  state.activeAccount=other?other.id:DEFAULT_ACCOUNT;
+  save();closeModal();render();markDirty();
+  showToast(accountLabel(acct)+' cleared');
+}
+
 function detectDelimiter(text){
   // Look at the first few lines; whichever delimiter appears more consistently wins
   const sample=text.split(/\r?\n/).slice(0,5);
@@ -2870,6 +3021,10 @@ function parseCsvLine(line,delim){
 }
 
 function importPortfolioCsv(){
+  // Which account this CSV belongs to — read once, used for both the rows and
+  // the meta, so the two can never disagree.
+  const sel=document.getElementById('portfolioAccountSelect');
+  const acct=ACCOUNTS.some(a=>a.id===(sel&&sel.value))?sel.value:activeAccount();
   let csv=(document.getElementById('portfolioCsvInput')?.value||'');
   // strip BOM / zero-width chars that the broker export scatters around
   csv=csv.replace(/[\uFEFF\u200B\u200C\u200D]/g,'').trim();
@@ -2929,15 +3084,24 @@ function importPortfolioCsv(){
   const investedTotal=holdings.reduce((s,h)=>s+h.mv,0);
   const denom=totalVal>0?totalVal:investedTotal;
 
-  state.portfolio=holdings.map(h=>({
+  /* ── The critical guard ──────────────────────────────────────────────
+     An import replaces the rows of ONE account and leaves the other
+     untouched. Importing Gilgamesh must never remove Odyssey — that is the
+     operation done most often, so the danger is highest there. Rows are
+     rebuilt for `acct` only and concatenated with everything else. */
+  const kept=state.portfolio.filter(h=>(h.account||DEFAULT_ACCOUNT)!==acct);
+  const fresh=holdings.map(h=>({
     symbol:h.symbol,
     name:h.name,
     currency:h.currency,
     listing:h.listing,
-    weight_pct:denom>0?h.mv/denom:0,
+    account:acct,
+    mv:h.mv,                          // value, not a frozen percentage
   }));
+  state.portfolio=kept.concat(fresh);
   const cashVal=totalVal>0?Math.max(0,totalVal-investedTotal):0;
-  state.portfolioMeta={
+  if(!state.portfolioMeta||typeof state.portfolioMeta!=='object')state.portfolioMeta={};
+  state.portfolioMeta[acct]={
     totalValue:    totalVal,
     investedValue: investedTotal,
     cashGbp:       cashVal,
@@ -2945,6 +3109,7 @@ function importPortfolioCsv(){
     snapshotDate:  new Date().toLocaleDateString('en-GB'),
   };
   state.portfolioSyncedAt=new Date().toISOString();
+  state.activeAccount=acct;          // show what was just imported
   save();closeModal();render();
   const suggestions=findCompanyLinkSuggestions();
   if(suggestions.length){setTimeout(()=>{
@@ -2953,7 +3118,7 @@ function importPortfolioCsv(){
     const root=document.getElementById('modalRoot');
     if(root&&!root.innerHTML.trim())openLinkSuggestModal(suggestions);
   },400);}
-  const newUntagged=portfolioGroups().filter(g=>{const t=state.tickerTags[g.key]||{};return!t.sector&&!t.geography;}).length;
+  const newUntagged=portfolioGroups(acct).filter(g=>{const t=state.tickerTags[g.key]||{};return!t.sector&&!t.geography;}).length;
   showToast('Imported '+holdings.length+' holdings'+(newUntagged?' — '+newUntagged+' untagged':''));
   markDirty();
 }
@@ -3356,6 +3521,7 @@ async function pullFromDrive(opts){
     if(remote.newsCache)state.newsCache=remote.newsCache;
     if(remote.portfolio)state.portfolio=remote.portfolio;
     if(remote.portfolioMeta)state.portfolioMeta=remote.portfolioMeta;
+    migratePortfolioToAccounts();   // a device on an older build may send legacy rows
     if(remote.portfolioSyncedAt)state.portfolioSyncedAt=remote.portfolioSyncedAt;
 
     state.lastSyncRemoteTime=remote.lastSync||null;
