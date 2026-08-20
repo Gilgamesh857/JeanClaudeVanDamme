@@ -337,7 +337,7 @@ let state={
   newsBatch:null,newsAskWindow:null,
   geminiTest:null,geminiModel:null,geminiModels:[],geminiModelsAt:null,modelsLoading:false,groundingOff:false,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
-  activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],stanceEditFor:null,
+  activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],stanceEditFor:null,viewsOpen:false,viewExpanded:null,
   activeMemoId:null
 };
 
@@ -410,6 +410,74 @@ function extractTickers(text){
   return[...new Set((String(text||'').match(TICKER_RE)||[]).map(t=>t.toUpperCase()))];
 }
 function extractHashes(text){return[...new Set((text.match(/#([a-zA-Z][a-zA-Z0-9_]*)/g)||[]).map(h=>h.toLowerCase()))];}
+/* ══ Top-down views ════════════════════════════════════════════════════
+   A view is not a new kind of object. It is an ordinary log entry carrying a
+   #view tag — so it is written the way you already write, and versioning
+   falls out of the log being immutable and timestamped.
+
+   Unlike a stance, a view is NEVER overwritten. The newest entry for a theme
+   is surfaced as current; every earlier one stays exactly where it is, in the
+   log and in search. Seeing how a view has changed is the point.
+
+   Syntax: #view for a general view, #view_gold / #viewgold for a theme.
+   No new parser and no new sigil — this rides on the existing hashtags. */
+const VIEW_STALE_DAYS=90;
+function viewThemeOf(hash){
+  const m=String(hash||'').match(/^#view[_-]?(.*)$/i);
+  if(!m)return null;
+  return (m[1]||'general').toLowerCase();
+}
+function entryViewThemes(e){
+  return (e.hashes||[]).map(viewThemeOf).filter(Boolean);
+}
+function isViewEntry(e){return entryViewThemes(e).length>0;}
+function themeLabel(theme){
+  if(theme==='general')return 'General';
+  return theme.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+}
+/* One entry per theme — newest first, with the whole history kept. */
+function viewThemes(){
+  const map={};
+  state.entries.forEach(e=>{
+    entryViewThemes(e).forEach(theme=>{
+      if(!map[theme])map[theme]={theme,label:themeLabel(theme),entries:[]};
+      map[theme].entries.push(e);
+    });
+  });
+  return Object.values(map).map(v=>{
+    v.entries.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+    v.current=v.entries[0];
+    v.versions=v.entries.length;
+    v.updated=new Date(v.current.ts).getTime();
+    v.ageDays=Math.floor((Date.now()-v.updated)/86400000);
+    v.stale=v.ageDays>VIEW_STALE_DAYS;
+    return v;
+  }).sort((a,b)=>b.updated-a.updated);
+}
+function currentView(theme){
+  const v=viewThemes().find(x=>x.theme===theme);
+  return v?v.current:null;
+}
+/* Show every version of one theme, oldest change visible — the log filtered
+   to that tag, which is exactly what search would give you. */
+function showViewHistory(theme){
+  const v=viewThemes().find(x=>x.theme===theme);
+  if(!v)return;
+  const tag=(v.current.hashes||[]).find(h=>viewThemeOf(h)===theme);
+  state.filterHashes=tag?[tag]:[];
+  state.filterTickers=[];
+  state.viewsOpen=false;
+  setTab('log');
+}
+function toggleViewsPanel(){
+  state.viewsOpen=!state.viewsOpen;
+  render();
+}
+function toggleViewExpand(theme){
+  state.viewExpanded=state.viewExpanded===theme?null:theme;
+  render();
+}
+
 function renderMd(text){
   return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\*(.+?)\*/g,'<em>$1</em>')
@@ -507,7 +575,7 @@ function renderLog(){
   const entries=filteredEntries();
   const composeHtml=`<div class="compose-card" id="composeCard" style="display:none">
     <div class="compose-label">Quick log</div>
-    <textarea class="compose-area" id="composeText" placeholder="What's on your mind? Try: Bought more $MSFT today — strong earnings #thesis #tech" oninput="onComposeInput()" rows="4"></textarea>
+    <textarea class="compose-area" id="composeText" placeholder="What's on your mind? Try: Bought more $MSFT today — strong earnings #thesis #tech&#10;Tag a macro call with #view_gold to track it over time." oninput="onComposeInput()" rows="4"></textarea>
     <div class="preview-tags" id="composeTags"></div>
     <div class="compose-footer">
       <div></div>
@@ -520,7 +588,45 @@ function renderLog(){
   if(!entries.length){
     return composeHtml+`<div class="empty-state"><div class="empty-icon">📓</div><div class="empty-title">Your diary is empty</div><div class="empty-body">Tap + to log your first investment note.<br>Use <code style="font-family:var(--font-mono);font-size:12px">$MSFT</code> for tickers and <code style="font-family:var(--font-mono);font-size:12px">#earnings</code> for tags.</div></div>`;
   }
-  return composeHtml+entries.map(e=>renderEntry(e)).join('');
+  return composeHtml+renderViewsBand()+entries.map(e=>renderEntry(e)).join('');
+}
+
+/* Sits above the log, collapsed by default. Appears only once a #view entry
+   exists, so nothing changes until the feature is used. */
+function renderViewsBand(){
+  const views=viewThemes();
+  if(!views.length)return '';
+  // Hide while filtering or searching — the log is showing something specific.
+  if(state.searchQuery.trim()||state.filterHashes.length||state.filterTickers.length)return '';
+  const staleCount=views.filter(v=>v.stale).length;
+  const head=`<div onclick="toggleViewsPanel()" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:var(--r);border:1px solid var(--border2);background:var(--surface2);cursor:pointer;${state.viewsOpen?'border-bottom-left-radius:0;border-bottom-right-radius:0;':''}margin-bottom:${state.viewsOpen?'0':'12px'}">
+      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+        <span style="font-family:var(--font-serif);font-size:15px;color:var(--ink)">Top-down views</span>
+        <span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${views.length}</span>
+        ${staleCount?`<span style="font-size:10px;font-family:var(--font-mono);color:var(--warn-txt)">${staleCount} ⏳</span>`:''}
+      </div>
+      <span style="color:var(--ink3);font-size:12px">${state.viewsOpen?'▲':'▼'}</span>
+    </div>`;
+  if(!state.viewsOpen){
+    // Collapsed: the freshest themes as a single quiet line.
+    return head.replace('margin-bottom:0','margin-bottom:12px');
+  }
+  const body=views.map(v=>{
+    const expanded=state.viewExpanded===v.theme;
+    const age=v.ageDays===0?'today':v.ageDays===1?'yesterday':v.ageDays+'d ago';
+    return `<div style="padding:10px 12px;border-top:1px solid var(--border)">
+      <div onclick="toggleViewExpand('${v.theme}')" style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;cursor:pointer">
+        <span style="font-family:var(--font-mono);font-size:12px;color:var(--tag-txt)">${v.label}</span>
+        <span style="font-size:10px;font-family:var(--font-mono);color:${v.stale?'var(--warn-txt)':'var(--ink3)'};white-space:nowrap">${age}${v.stale?' · worth revisiting':''}</span>
+      </div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-top:6px;${expanded?'':'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden'}">${renderMd(v.current.text)}</div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <span onclick="toggleViewExpand('${v.theme}')" style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);cursor:pointer">${expanded?'▲ less':'▼ more'}</span>
+        ${v.versions>1?`<span onclick="showViewHistory('${v.theme}')" style="font-size:10px;font-family:var(--font-mono);color:var(--tag-txt);cursor:pointer">⧉ ${v.versions} versions</span>`:''}
+      </div>
+    </div>`;
+  }).join('');
+  return head+`<div style="border:1px solid var(--border2);border-top:none;border-radius:0 0 var(--r) var(--r);background:var(--surface);margin-bottom:12px">${body}</div>`;
 }
 function renderEntry(e,compact=false){
   const tickerTags=e.tickers.map(t=>{
@@ -529,12 +635,23 @@ function renderEntry(e,compact=false){
   }).join('');
   const hashTags=e.hashes.map(h=>`<span class="tag hash" onclick="toggleFilter('hash','${h}')">${h}</span>`).join('');
   const bodyHtml=highlight(renderMd(e.text),state.searchQuery);
+  /* A view entry is flagged in place, and superseded ones say so — the older
+     version is never removed, just labelled. */
+  const vThemes=entryViewThemes(e);
+  const viewFlag=vThemes.length?(()=>{
+    const isCurrent=vThemes.some(th=>{const c=currentView(th);return c&&c.id===e.id;});
+    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span style="font-family:var(--font-mono);font-size:10px;padding:1px 7px;border-radius:20px;background:${isCurrent?'var(--tag-txt)':'var(--surface3)'};color:${isCurrent?'#fff':'var(--ink3)'}">${isCurrent?'Current view':'Earlier view'}</span>
+      <span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${vThemes.map(themeLabel).join(' · ')}</span>
+    </div>`;
+  })():'';
   if(compact)return`<div style="padding:8px 0;border-bottom:1px solid var(--border)">
     <div class="entry-date">${fmtDate(e.ts)}</div>
     <div class="entry-body" style="font-size:13px;margin-top:4px">${bodyHtml}</div>
     <div class="entry-tags" style="margin-top:6px">${tickerTags}${hashTags}</div>
   </div>`;
   return`<div class="entry-card" id="entry-${e.id}">
+    ${viewFlag}
     <div class="entry-meta">
       <div class="entry-date">${fmtDate(e.ts)}</div>
       <div class="entry-actions">
