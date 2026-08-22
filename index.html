@@ -44,7 +44,29 @@
     }
   }
   body{font-family:var(--font-body);background:var(--surface2);color:var(--ink);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
-  #app{display:flex;flex-direction:column;max-width:480px;margin:0 auto;min-height:100vh;background:var(--surface);position:relative}
+  #app{display:flex;flex-direction:column;max-width:480px;margin:0 auto;min-height:100vh;background:var(--surface);position:relative;width:100%}
+  #shell{display:flex;justify-content:center;align-items:flex-start;gap:0}
+  #contextRail{display:none}
+  /* Wide screens: the log stays a single readable column — a diary is read in
+     order, and columns would send you back up the page. The extra width goes
+     to context that used to be collapsed: views, stances, memos to write. */
+  @media(min-width:1080px){
+    #shell{gap:24px;padding:0 24px}
+    #app{margin:0;border-right:1px solid var(--border)}
+    #contextRail{display:block;width:320px;flex-shrink:0;position:sticky;top:0;max-height:100vh;overflow-y:auto;padding:18px 0 40px}
+    .fab{right:max(16px,calc(50% - 402px))}
+  }
+  /* Grids can take the extra width safely — order matters less there. */
+  @media(min-width:1080px){
+    #app.wide{max-width:760px}
+    #app.wide .ticker-list{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    #app.wide .analytics-grid{grid-template-columns:repeat(4,1fr)}
+  }
+  .rail-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px}
+  .rail-title{font-family:var(--font-serif);font-size:14px;color:var(--ink);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .rail-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid var(--border);cursor:pointer}
+  .rail-row:first-of-type{border-top:none}
+  .rail-empty{font-size:12px;color:var(--ink3);line-height:1.5}
   .topbar{padding:14px 16px 10px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:100;display:flex;flex-direction:column;gap:8px}
   .topbar-row{display:flex;align-items:center;justify-content:space-between}
   .brand{font-family:var(--font-serif);font-size:20px;color:var(--ink);letter-spacing:-0.3px}
@@ -202,10 +224,11 @@
 </style>
 </head>
 <body>
+<div id="shell">
 <div id="app">
   <div class="topbar">
     <div class="topbar-row">
-      <div class="brand">invest<span>.</span>diary</div>
+      <div class="brand" onclick="showBuild()" style="cursor:pointer" title="Build version">invest<span>.</span>diary</div>
       <div class="sync-badge" id="syncBadge" onclick="syncNow()">
         <span class="dot" id="syncDot"></span>
         <span id="syncLabel">Connect Drive</span>
@@ -225,6 +248,8 @@
   </div>
   <div class="scroll-area" id="mainContent"></div>
 </div>
+<aside id="contextRail"></aside>
+</div>
 <div class="toast" id="toast"></div>
 <button class="fab" id="fab" onclick="onFab()" title="New entry">+</button>
 <div id="modalRoot"></div>
@@ -238,6 +263,10 @@ const ACCOUNTS=[
   {id:'athena',   label:'Athena'},
 ];
 const DEFAULT_ACCOUNT='gilgamesh';
+
+/* Set at build time. Tap the brand to see it — the fastest way to tell
+   whether a device is running a stale cached copy. */
+const BUILD_STAMP='2026-08-22 10:46 UTC';
 
 const MEMO_SECTIONS=['thesis','risks','catalysts','management','funding','valuation','technicals','reasons_to_sell','description'];
 
@@ -539,6 +568,10 @@ function render(){
   else if(state.activeTab==='memos')renderMemosTab(el);
   else if(state.activeTab==='portfolio')el.innerHTML=renderPortfolio();
   else el.innerHTML=renderTickers();
+  // Grids get the extra width on desktop; the log and memos stay one column
+  document.getElementById('app').classList.toggle('wide',
+    state.activeTab==='tickers'||state.activeTab==='portfolio');
+  renderContextRail();
   // FAB
   const fab=document.getElementById('fab');
   if(state.activeTab==='memos'&&state.activeMemoId){fab.style.display='none';}
@@ -549,6 +582,61 @@ function onFab(){
   if(state.activeTab==='memos')openNewMemoModal();
   else openCompose();
 }
+
+/* The desktop rail: the pre-action context that is otherwise collapsed or a
+   tab away. Hidden entirely below 1080px, so the phone is untouched. */
+function renderContextRail(){
+  const rail=document.getElementById('contextRail');
+  if(!rail)return;
+  if(window.innerWidth<1080){rail.innerHTML='';return;}
+
+  // Current top-down views
+  const views=viewThemes();
+  const viewCard=`<div class="rail-card">
+    <div class="rail-title">Top-down views ${views.filter(v=>v.stale).length?`<span style="font-size:10px;font-family:var(--font-mono);color:var(--warn-txt)">${views.filter(v=>v.stale).length} ⏳</span>`:''}</div>
+    ${views.length?views.slice(0,6).map(v=>`<div class="rail-row" onclick="showViewHistory('${v.theme}')">
+        <span style="font-family:var(--font-mono);font-size:12px;color:var(--tag-txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${v.label}</span>
+        <span style="font-size:10px;font-family:var(--font-mono);color:${v.stale?'var(--warn-txt)':'var(--ink3)'};white-space:nowrap">${v.ageDays===0?'today':v.ageDays+'d'}</span>
+      </div>`).join('')
+      :`<div class="rail-empty">Tag a log entry <span style="font-family:var(--font-mono)">#view_gold</span> to track a macro call over time.</div>`}
+  </div>`;
+
+  // Open stances, action-first
+  const board=stanceBoard();
+  const stanceCard=`<div class="rail-card">
+    <div class="rail-title">Stances ${board.filter(b=>b.stale).length?`<span style="font-size:10px;font-family:var(--font-mono);color:var(--warn-txt)">${board.filter(b=>b.stale).length} ⏳</span>`:''}</div>
+    ${board.length?board.slice(0,10).map(b=>`<div class="rail-row" onclick="goToTicker('${b.symbol}')">
+        <span style="font-family:var(--font-mono);font-size:12px;color:var(--tag-txt)">${b.symbol}</span>
+        <span style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+          ${stanceBadge(b.symbol)}
+          <span style="font-size:10px;font-family:var(--font-mono);color:${b.stale?'var(--warn-txt)':'var(--ink3)'}">${b.age===0?'today':b.age+'d'}</span>
+        </span>
+      </div>`).join('')
+      :`<div class="rail-empty">Set a stance from any ticker to see it here.</div>`}
+  </div>`;
+
+  /* Holdings with no memo, biggest first — the honest answer to "which one
+     should I write next". */
+  const noMemo=tickerArchive()
+    .filter(t=>t.holding&&!t.memo)
+    .sort((a,b)=>b.weight-a.weight)
+    .slice(0,8);
+  const memoCard=`<div class="rail-card">
+    <div class="rail-title">Memos to write ${noMemo.length?`<span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${tickerArchive().filter(t=>t.holding&&!t.memo).length}</span>`:''}</div>
+    ${noMemo.length?noMemo.map(t=>`<div class="rail-row" onclick="openTickerMemo('${t.symbol}')">
+        <span style="font-family:var(--font-mono);font-size:12px;color:var(--tag-txt)">${t.symbol}</span>
+        <span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);white-space:nowrap">${(t.weight*100).toFixed(1)}%${seedCountFor(t.symbol)?` · ${seedCountFor(t.symbol)} log${seedCountFor(t.symbol)===1?'':'s'}`:''}</span>
+      </div>`).join('')
+      :`<div class="rail-empty">Every holding has a memo. Good.</div>`}
+  </div>`;
+
+  rail.innerHTML=viewCard+stanceCard+memoCard;
+}
+// Rail appears and disappears with the viewport
+window.addEventListener('resize',()=>{
+  clearTimeout(window.__railTimer);
+  window.__railTimer=setTimeout(renderContextRail,150);
+});
 
 /* ══════════════════════════════════════
    LOG TAB
@@ -1022,6 +1110,42 @@ function setConviction(memoId,n){
 
 
 
+/* Your own past words about a holding, newest first, as raw material for the
+   thesis. Editing beats composing, and a blank page is where the backfill
+   stalls. Nothing is invented and nothing is summarised — these are verbatim
+   log entries with their dates, for you to cut down. */
+function seedTextFor(ticker){
+  const sym=primarySymbol(ticker);
+  if(!sym)return '';
+  const rel=state.entries
+    .filter(e=>(e.tickers||[]).some(t=>primarySymbol(t)===sym))
+    .sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+  if(!rel.length)return '';
+  return rel.map(e=>{
+    const d=new Date(e.ts).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+    return `**${d}** — ${e.text.trim()}`;
+  }).join('\n\n');
+}
+function seedCountFor(ticker){
+  const sym=primarySymbol(ticker);
+  if(!sym)return 0;
+  return state.entries.filter(e=>(e.tickers||[]).some(t=>primarySymbol(t)===sym)).length;
+}
+/* Live hint in the new-memo modal, so the offer appears as you type a ticker. */
+function refreshSeedHint(){
+  const el=document.getElementById('memoSeedHint');
+  if(!el)return;
+  const tk=(document.getElementById('newMemoTicker')?.value||'').trim();
+  const n=tk?seedCountFor(tk):0;
+  if(!n){el.innerHTML='';el.style.display='none';return;}
+  el.style.display='block';
+  el.innerHTML=`<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:9px 11px;background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r)">
+    <input type="checkbox" id="memoSeedCheck" checked style="margin-top:2px;flex-shrink:0">
+    <span style="font-size:12px;color:var(--ink2);line-height:1.5">Start the thesis from your <strong>${n}</strong> existing log ${n===1?'entry':'entries'} for ${bareSym(tk)}<br>
+    <span style="font-size:11px;font-family:var(--font-mono);color:var(--ink3)">Pasted verbatim with dates — edit it down to a thesis.</span></span>
+  </label>`;
+}
+
 function openNewMemoModal(){
   const root=document.getElementById('modalRoot');
   root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -1029,19 +1153,20 @@ function openNewMemoModal(){
       <div class="modal-header"><div class="modal-title">New memo</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
       <div class="field-row">
         <div class="field-label">Ticker</div>
-        <input class="field-input" id="newMemoTicker" placeholder="$ASML" style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)" oninput="this.value=this.value.toUpperCase()">
+        <input class="field-input" id="newMemoTicker" placeholder="$ASML" style="font-family:var(--font-mono);font-weight:500;color:var(--tag-txt)" oninput="this.value=this.value.toUpperCase();refreshSeedHint()">
       </div>
       <div class="field-row">
         <div class="field-label">Company name <span style="opacity:.5">(optional)</span></div>
         <input class="field-input" id="newMemoName" placeholder="ASML Holding N.V.">
       </div>
+      <div id="memoSeedHint" style="display:none;margin-bottom:12px"></div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
         <button class="btn btn-primary" onclick="createMemo()">Create</button>
       </div>
     </div>
   </div>`;
-  setTimeout(()=>document.getElementById('newMemoTicker')?.focus(),100);
+  setTimeout(()=>{document.getElementById('newMemoTicker')?.focus();refreshSeedHint();},100);
 }
 function createMemo(){
   let ticker=(document.getElementById('newMemoTicker')?.value||'').trim().toUpperCase();
@@ -1051,6 +1176,12 @@ function createMemo(){
   if(state.memos.find(m=>m.ticker===ticker)){showToast('Memo already exists for '+ticker);return;}
   const sections={};
   MEMO_SECTIONS.forEach(s=>{sections[s]='';});
+  // Seed the thesis with past log entries when offered and left ticked
+  const seedOn=document.getElementById('memoSeedCheck')?.checked;
+  if(seedOn){
+    const seed=seedTextFor(ticker);
+    if(seed)sections.thesis=seed;
+  }
   const memo={
     id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
     ticker,name,conviction:0,mgmt:0,sections,catalysts:[],
@@ -1060,7 +1191,7 @@ function createMemo(){
   save();closeModal();
   state.activeMemoId=memo.id;
   render();
-  showToast('Memo created');
+  showToast(sections.thesis?'Memo seeded from your log':'Memo created');
   markDirty();
 }
 
@@ -3065,6 +3196,9 @@ async function resolveConflict(choice){
 }
 
 // Keep the batch countdown honest without re-rendering the whole app
+function showBuild(){
+  showToast('Build '+BUILD_STAMP);
+}
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400);}
 render();
 // Set initial sync badge state based on persisted OAuth
