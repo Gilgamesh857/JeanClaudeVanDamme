@@ -228,7 +228,7 @@
 <div id="app">
   <div class="topbar">
     <div class="topbar-row">
-      <div class="brand" onclick="showBuild()" style="cursor:pointer" title="Build version">invest<span>.</span>diary</div>
+      <div class="brand" id="brand"></div>
       <div class="sync-badge" id="syncBadge" onclick="syncNow()">
         <span class="dot" id="syncDot"></span>
         <span id="syncLabel">Connect Drive</span>
@@ -349,7 +349,7 @@ const SECTION_LABELS={thesis:'Investment Thesis',risks:'Risks',catalysts:'Cataly
 let state={
   entries:[],memos:[],
   driveFileId:null,driveSynced:false,driveToken:null,
-  sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,activeAccount:DEFAULT_ACCOUNT,
+  sheetsId:null,sheetsToken:null,portfolio:[],portfolioSyncedAt:null,portfolioMeta:null,activeAccount:DEFAULT_ACCOUNT,hideValues:false,
   tickerTags:{},portSelectMode:false,portSelected:{},
   lastLocalChange:0,dirty:false,lastSyncedAt:null,lastSyncRemoteTime:null,lastSeenDriveModified:null,syncConflict:null,
   portSectorFilter:null,portGeoFilter:null,portView:'holdings',portSort:'weight',
@@ -369,6 +369,7 @@ function load(){
       state.sheetsId=s.sheetsId||null;state.sheetsToken=s.sheetsToken||null;
       state.portfolio=s.portfolio||[];state.portfolioSyncedAt=s.portfolioSyncedAt||null;state.portfolioMeta=s.portfolioMeta||null;
       state.activeAccount=s.activeAccount||DEFAULT_ACCOUNT;
+      state.hideValues=!!s.hideValues;
       migratePortfolioToAccounts();
       state.tickerTags=s.tickerTags||{};state.lastLocalChange=s.lastLocalChange||0;
       state.dirty=!!s.dirty;
@@ -400,7 +401,7 @@ function save(){
   localStorage.setItem(STORAGE_KEY,JSON.stringify({
     entries:state.entries,memos:state.memos,driveFileId:state.driveFileId,
     sheetsId:state.sheetsId,sheetsToken:state.sheetsToken,
-    portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,activeAccount:state.activeAccount,
+    portfolio:state.portfolio,portfolioSyncedAt:state.portfolioSyncedAt,portfolioMeta:state.portfolioMeta,activeAccount:state.activeAccount,hideValues:state.hideValues,
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
     dirty:state.dirty,lastSyncedAt:state.lastSyncedAt,lastSyncRemoteTime:state.lastSyncRemoteTime,
     lastSeenDriveModified:state.lastSeenDriveModified,syncConflict:state.syncConflict,
@@ -1386,6 +1387,22 @@ function holdingsFor(sym,acct){
    what makes per-account weights possible at all — a stored percentage is
    relative to whatever the account happened to hold on import day, and
    cannot be recomputed. */
+/* Display-only masking of cash amounts, for reading the portfolio in public.
+   Purely a formatting layer: every calculation still runs on the real numbers,
+   so nothing downstream can be affected by whether this is on or off.
+   Percentages stay visible — they are the point of the tab and reveal nothing
+   about the size of the pot. */
+function money(v){
+  const n=Math.round(parseFloat(v)||0);
+  if(state.hideValues)return '••••';
+  return '£'+n.toLocaleString('en-GB');
+}
+function toggleHideValues(){
+  state.hideValues=!state.hideValues;
+  save();render();
+  showToast(state.hideValues?'Values hidden':'Values shown');
+}
+
 function accountLabel(id){const a=ACCOUNTS.find(x=>x.id===id);return a?a.label:id;}
 function activeAccount(){
   return ACCOUNTS.some(a=>a.id===state.activeAccount)?state.activeAccount:DEFAULT_ACCOUNT;
@@ -1945,12 +1962,11 @@ function renderPortfolio(){
   const accTabs=accountsInUse().length>1||ACCOUNTS.some(a=>accountIsPopulated(a.id)&&a.id!==DEFAULT_ACCOUNT)
     ? `<div style="display:flex;gap:6px;margin-bottom:12px">${ACCOUNTS.map(a=>{
         const on=activeAccount()===a.id;
-        const inv=investedFor(a.id);
         // Narrower type once a third account exists, so all three fit a phone.
         const many=ACCOUNTS.length>2;
         return `<div onclick="setAccount('${a.id}')" style="flex:1;min-width:0;text-align:center;cursor:pointer;padding:8px 4px;border-radius:var(--r);border:1px solid ${on?'var(--accent)':'var(--border2)'};background:${on?'var(--accent2)':'transparent'}">
           <div style="font-family:var(--font-serif);font-size:${many?'13px':'14px'};color:${on?'var(--accent)':'var(--ink2)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.label}</div>
-          <div style="font-size:${many?'9px':'10px'};font-family:var(--font-mono);color:var(--ink3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${inv>0?'£'+Math.round(inv).toLocaleString('en-GB'):'empty'}</div>
+          <div style="font-size:${many?'9px':'10px'};font-family:var(--font-mono);color:var(--ink3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${accountIsPopulated(a.id)?accountRows(a.id).length+' holdings':'empty'}</div>
         </div>`;
       }).join('')}</div>`
     : '';
@@ -1966,10 +1982,13 @@ function renderPortfolio(){
 
   // summary cards
   const meta=metaFor(activeAccount());
-  const summaryHtml=meta&&meta.totalValue?`<div class="analytics-grid" style="margin-bottom:16px">
-    <div class="metric-card"><div class="metric-label">${accountsInUse().length>1?accountLabel(activeAccount()):'Total portfolio'}</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.totalValue).toLocaleString('en-GB')}</div></div>
-    <div class="metric-card"><div class="metric-label">Invested</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.investedValue||0).toLocaleString('en-GB')}</div></div>
-    <div class="metric-card"><div class="metric-label">Cash</div><div class="metric-value" style="font-size:18px">£${Math.round(meta.cashGbp||0).toLocaleString('en-GB')}</div></div>
+  const privacyToggle=(meta&&meta.totalValue)?`<div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+    <span onclick="toggleHideValues()" style="cursor:pointer;font-size:11px;font-family:var(--font-mono);color:var(--ink3);padding:3px 10px;border:1px solid var(--border2);border-radius:20px">${state.hideValues?'👁 Show values':'⊘ Hide values'}</span>
+  </div>`:'';
+  const summaryHtml=meta&&meta.totalValue?privacyToggle+`<div class="analytics-grid" style="margin-bottom:16px">
+    <div class="metric-card"><div class="metric-label">${accountsInUse().length>1?accountLabel(activeAccount()):'Total portfolio'}</div><div class="metric-value" style="font-size:18px">${money(meta.totalValue)}</div></div>
+    <div class="metric-card"><div class="metric-label">Invested</div><div class="metric-value" style="font-size:18px">${money(meta.investedValue||0)}</div></div>
+    <div class="metric-card"><div class="metric-label">Cash</div><div class="metric-value" style="font-size:18px">${money(meta.cashGbp||0)}</div></div>
     <div class="metric-card"><div class="metric-label">Cash %</div><div class="metric-value" style="font-size:18px">${((meta.cashPct||0)*100).toFixed(1)}%</div></div>
   </div>`:'';
 
@@ -2801,6 +2820,7 @@ function openOAuthSetup(){
         <div class="modal-title">${isConnected?'Google account connected':'Connect Google account'}</div>
         <button class="icon-btn" onclick="closeModal()">✕</button>
       </div>
+      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px">Build · ${BUILD_STAMP}</div>
       ${isConnected
         ? `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;font-size:12px;font-family:var(--font-mono);color:var(--ink2);line-height:1.9;margin-bottom:12px">
              <div>Status · <span style="color:${syncStatusColour()}">${syncStatusLine()}</span></div>
