@@ -95,15 +95,7 @@
   .entry-body strong{font-weight:500;color:var(--ink)}
   .entry-body em{font-style:italic}
   .entry-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
-  .entry-news-btn{display:flex;align-items:center;gap:5px;margin-top:10px;padding:6px 10px;border-radius:var(--r);border:1px dashed var(--border2);background:transparent;cursor:pointer;font-size:12px;font-family:var(--font-mono);color:var(--ink3);width:100%;justify-content:center;transition:all .2s}
-  .entry-news-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent2)}
-  .news-panel{background:var(--surface2);border-radius:var(--r);padding:12px;margin-top:10px;border:1px solid var(--border)}
-  .news-panel-header{font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
-  .news-item{padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer}
-  .news-item:last-child{border-bottom:none}
-  .news-item-title{font-size:13px;color:var(--ink);font-weight:500;margin-bottom:2px}
-  .news-item-meta{font-size:11px;color:var(--ink3);font-family:var(--font-mono)}
-  .news-config{padding:8px;background:var(--warn-bg);border-radius:var(--r);font-size:12px;color:var(--warn-txt);line-height:1.5}
+  .notice-box{padding:8px;background:var(--warn-bg);border-radius:var(--r);font-size:12px;color:var(--warn-txt);line-height:1.5}
   .empty-state{text-align:center;padding:48px 24px;color:var(--ink3)}
   .empty-icon{font-size:36px;margin-bottom:12px;opacity:.4}
   .empty-title{font-family:var(--font-serif);font-size:18px;color:var(--ink2);margin-bottom:6px}
@@ -229,7 +221,6 @@
     <div class="tab active" onclick="setTab('log')">Log</div>
     <div class="tab" onclick="setTab('memos')">Memos</div>
     <div class="tab" onclick="setTab('portfolio')">Portfolio</div>
-    <div class="tab" onclick="setTab('news')">News</div>
     <div class="tab" onclick="setTab('tickers')">Tickers</div>
   </div>
   <div class="scroll-area" id="mainContent"></div>
@@ -244,6 +235,7 @@ const STORAGE_KEY='invest_diary_v2';
 const ACCOUNTS=[
   {id:'gilgamesh',label:'Gilgamesh'},
   {id:'odyssey',  label:'Odyssey'},
+  {id:'athena',   label:'Athena'},
 ];
 const DEFAULT_ACCOUNT='gilgamesh';
 
@@ -332,10 +324,7 @@ let state={
   tickerTags:{},portSelectMode:false,portSelected:{},
   lastLocalChange:0,dirty:false,lastSyncedAt:null,lastSyncRemoteTime:null,lastSeenDriveModified:null,syncConflict:null,
   portSectorFilter:null,portGeoFilter:null,portView:'holdings',portSort:'weight',
-  geminiKey:null,newsCache:{},newsLoading:{},activeNewsTicker:null,newsWindow:'7d',
   activeTicker:null,tickerSort:'recent',tickerFilter:'all',
-  newsBatch:null,newsAskWindow:null,
-  geminiTest:null,geminiModel:null,geminiModels:[],geminiModelsAt:null,modelsLoading:false,groundingOff:false,
   oauthClientId:null,oauthClientSecret:null,oauthRefreshToken:null,oauthAccessToken:null,oauthExpiry:0,
   activeTab:'log',searchQuery:'',filterTickers:[],filterHashes:[],stanceEditFor:null,viewsOpen:false,viewExpanded:null,
   activeMemoId:null
@@ -370,9 +359,6 @@ function load(){
           if(cat.anchor&&!cat.start){cat.start=cat.anchor;cat.end=cat.anchor;delete cat.anchor;}
         });
       });
-      state.geminiKey=s.geminiKey||null;state.newsCache=s.newsCache||{};state.newsWindow=s.newsWindow||'7d';
-      state.geminiModel=s.geminiModel||null;state.geminiModels=s.geminiModels||[];state.geminiModelsAt=s.geminiModelsAt||null;
-      state.groundingOff=!!s.groundingOff;
 
       state.oauthClientId=s.oauthClientId||null;state.oauthClientSecret=s.oauthClientSecret||null;
       state.oauthRefreshToken=s.oauthRefreshToken||null;state.oauthAccessToken=s.oauthAccessToken||null;state.oauthExpiry=s.oauthExpiry||0;
@@ -389,7 +375,6 @@ function save(){
     tickerTags:state.tickerTags,lastLocalChange:state.lastLocalChange,
     dirty:state.dirty,lastSyncedAt:state.lastSyncedAt,lastSyncRemoteTime:state.lastSyncRemoteTime,
     lastSeenDriveModified:state.lastSeenDriveModified,syncConflict:state.syncConflict,
-    geminiKey:state.geminiKey,newsCache:state.newsCache,newsWindow:state.newsWindow,geminiModel:state.geminiModel,geminiModels:state.geminiModels,geminiModelsAt:state.geminiModelsAt,groundingOff:state.groundingOff,
 
     oauthClientId:state.oauthClientId,oauthClientSecret:state.oauthClientSecret,
     oauthRefreshToken:state.oauthRefreshToken,oauthAccessToken:state.oauthAccessToken,oauthExpiry:state.oauthExpiry
@@ -518,16 +503,15 @@ function setTab(tab,opts){
   // A bare tab click always lands on the list. Only an explicit payload
   // (e.g. goToTicker) opens a detail view.
   state.activeMemoId    = (opts&&opts.memoId) || null;
-  state.activeNewsTicker= (tab==='news'    && opts && opts.ticker) ? opts.ticker : null;
   state.activeTicker    = (tab==='tickers' && opts && opts.ticker) ? opts.ticker : null;
   document.querySelectorAll('.tab').forEach((el,i)=>{
-    el.classList.toggle('active',['log','memos','portfolio','news','tickers'][i]===tab);
+    el.classList.toggle('active',['log','memos','portfolio','tickers'][i]===tab);
   });
   // show/hide search bar
   const sw=document.getElementById('searchBarWrap');
-  if(sw)sw.style.display=(tab==='memos'||tab==='portfolio'||tab==='news'?'none':'flex');
+  if(sw)sw.style.display=(tab==='memos'||tab==='portfolio'?'none':'flex');
   const fc=document.getElementById('filterChips');
-  if(fc&&(tab==='memos'||tab==='portfolio'||tab==='news'))fc.innerHTML='';
+  if(fc&&(tab==='memos'||tab==='portfolio'))fc.innerHTML='';
   render();
 }
 function onSearch(){state.searchQuery=document.getElementById('searchInput').value;render();}
@@ -554,12 +538,10 @@ function render(){
   if(state.activeTab==='log')el.innerHTML=renderLog();
   else if(state.activeTab==='memos')renderMemosTab(el);
   else if(state.activeTab==='portfolio')el.innerHTML=renderPortfolio();
-  else if(state.activeTab==='news')el.innerHTML=renderNews();
   else el.innerHTML=renderTickers();
   // FAB
   const fab=document.getElementById('fab');
-  if(state.activeTab==='news'){fab.style.display='none';}
-  else if(state.activeTab==='memos'&&state.activeMemoId){fab.style.display='none';}
+  if(state.activeTab==='memos'&&state.activeMemoId){fab.style.display='none';}
   else if(state.activeTab==='memos'){fab.textContent='+';fab.style.display='flex';}
   else{fab.textContent='+';fab.style.display='flex';}
 }
@@ -669,12 +651,6 @@ function renderEntry(e,compact=false){
       <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">Tap the active one again to clear it.</div>
     </div>`:''}
     ${e.tickers.length?`<button class="icon-btn" style="font-size:10px;font-family:var(--font-mono);padding:2px 0;margin-top:4px" onclick="event.stopPropagation();toggleStanceEdit('${e.id}')">${state.stanceEditFor===e.id?'▲ hide stance':'⊹ set stance'}</button>`:''}
-    ${e.tickers.length?e.tickers.map(t=>{
-      const s=t.replace(/^\$/,'').toUpperCase();
-      const cached=state.newsCache[s];
-      const n=cached&&cached.items?cached.items.filter(i=>i.material!==false).length:0;
-      return `<button class="entry-news-btn" style="margin-top:6px" onclick="event.stopPropagation();openNewsFor('${s}')">${cached?`📰 ${s} — ${n?n+' item'+(n===1?'':'s'):'no material news'} · ${fmtDateRelative(cached.fetchedAt)}`:`↓ Fetch news for ${s}`}</button>`;
-    }).join(''):''}
   </div>`;
 }
 
@@ -1448,839 +1424,6 @@ function prefillNewMemo(ticker){
 }
 
 
-/* ══════════════════════════════════════
-   NEWS  —  provider layer + digest UI
-   The provider is deliberately isolated: swapping Gemini for real
-   RNS / SEDAR+ / ASX feeds later means replacing fetchNewsFor() only.
-══════════════════════════════════════ */
-
-/* ── Gemini configuration ──────────────────────────────────────────
-   Deliberately minimal. Earlier versions tried to discover models, rank
-   them, track a daily budget and classify errors. All of it guessed at
-   numbers the app cannot see, and the guesses were wrong.
-
-   IMPORTANT — why 429s appear when your quota looks untouched:
-   requests using the google_search grounding tool are counted against the
-   free tier's generate_content quota (20/day, 5/min), NOT against the
-   separate and much larger search-grounding quota. So Cloud Console can
-   show 2/500 used on a model while every grounded call is rejected.
-   This is a known Google-side behaviour, not something the app controls.
-
-   Consequence: on the free tier you get roughly 20 grounded requests per
-   day and no more than about 5 per minute. The app no longer pretends to
-   track that — it simply reports what Google says. */
-
-/* Model IDs die without warning and I cannot know which ones your key can
-   call. So the app asks Google directly — ListModels returns exactly what is
-   available to this key, right now. No hardcoded names, no guessing. */
-const GEMINI_ENDPOINT_BASE='https://generativelanguage.googleapis.com/v1beta';
-
-function geminiModel(){ return state.geminiModel||null; }
-
-async function listGeminiModels(){
-  if(!state.geminiKey)throw new Error('No API key');
-  const res=await fetch(`${GEMINI_ENDPOINT_BASE}/models`,{
-    headers:{'x-goog-api-key':state.geminiKey}
-  });
-  if(!res.ok){
-    const e=await res.json().catch(()=>({}));
-    throw new Error(e?.error?.message||`HTTP ${res.status}`);
-  }
-  const data=await res.json();
-  const models=(data.models||[])
-    .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
-    .map(m=>({id:(m.name||'').replace(/^models\//,''), label:m.displayName||''}))
-    .filter(m=>m.id&&!/embedding|aqa|tts|image|audio|veo|imagen|gemma|robotics/i.test(m.id));
-
-  state.geminiModels=models;
-  state.geminiModelsAt=new Date().toISOString();
-  // If nothing is chosen, or the choice has been retired, take the first
-  if(models.length&&!models.find(m=>m.id===state.geminiModel)){
-    state.geminiModel=models[0].id;
-  }
-  save();
-  return models;
-}
-
-const GEMINI_ENDPOINT=GEMINI_ENDPOINT_BASE+'/models';
-
-// Minimum gap between requests. The free tier allows ~5/min; 15s is safe.
-const MIN_REQUEST_GAP_MS=15000;
-let lastRequestAt=0;
-
-function msUntilNextAllowed(){
-  return Math.max(0, MIN_REQUEST_GAP_MS-(Date.now()-lastRequestAt));
-}
-
-const NEWS_WINDOWS={
-  '24h':{label:'24h', days:1,  phrase:'the last 24 hours',
-         staleMs:12*3600000,
-         note:'This is a daily check. Only report announcements published in the last 24 hours. If nothing was published in that window, say so plainly and return an empty items array — that is the expected and correct answer on most days. Do not reach back further to find something to report.'},
-  '3d': {label:'3d',  days:3,  phrase:'the last 3 days',
-         staleMs:36*3600000,
-         note:'Only report announcements published in the last 3 days. This window is typically used over a weekend or after a short break, to catch the last trading day or two. An empty result is a legitimate answer — do not stretch the window to fill the list.'},
-  '7d': {label:'7d',  days:7,  phrase:'the last 7 days',
-         staleMs:3*86400000,
-         note:'Only report announcements published in the last 7 days. An empty result is a legitimate answer. Do not widen the window to fill the list.'},
-  '30d':{label:'30d', days:30, phrase:'the last 30 days',
-         staleMs:7*86400000,
-         note:'Only report announcements published in the last 30 days.'},
-  '90d':{label:'90d', days:90, phrase:'the last 90 days',
-         staleMs:21*86400000,
-         note:'Report announcements published in the last 90 days. This is a catch-up review, so include anything material even if you have to work back through several months of filings.'},
-};
-function currentWindow(){return NEWS_WINDOWS[state.newsWindow]||NEWS_WINDOWS['7d'];}
-
-/* Daily budget.
-   The free tier caps requests per DAY, not just per minute. Throttling
-   cannot help with that, so we track spend and let the user roll a full
-   sweep across several days instead of failing halfway through one. */
-
-/* ══ Which tickers we watch: holdings + anything mentioned in the log ══ */
-function newsUniverse(){
-  const map={};
-  // One entry per company, not per listing — a second listing is not a
-  // second search, and the free tier only allows ~20 grounded calls a day.
-  // Both accounts are covered; weight here only orders the queue.
-  ACCOUNTS.forEach(a=>portfolioGroups(a.id).forEach(g=>{
-    const prev=map[g.key];
-    map[g.key]={symbol:g.key,inPortfolio:true,weight:Math.max(prev?prev.weight:0,g.weight_pct||0)};
-  }));
-  state.entries.forEach(e=>{
-    e.tickers.forEach(t=>{
-      const s=primarySymbol(t);
-      if(!map[s])map[s]={symbol:s,inPortfolio:false,weight:0};
-    });
-  });
-  return Object.values(map).sort((a,b)=>{
-    if(a.inPortfolio!==b.inPortfolio)return a.inPortfolio?-1:1;
-    return b.weight-a.weight;
-  });
-}
-
-/* Everything known about a ticker, to steer the search and the analysis */
-function tickerContext(symbol){
-  const s=primarySymbol(symbol);
-  const tag=state.tickerTags[s]||{};
-  const holding=holdingFor(s,'all');
-  const memo=state.memos.find(m=>sameCompany(m.ticker,s));
-  return {
-    symbol:s,
-    legalName: tag.legalName||tag.name||(holding?holding.name:'')||'',
-    sector:    tag.sector||'',
-    geography: tag.geography||'',
-    weight:    weightFor(s,activeAccount()),
-    accountWeights: weightsByAccount(s),
-    inPortfolio: !!holding,
-    memo,
-    thesis:    memo&&memo.sections?(memo.sections.thesis||''):'',
-    risks:     memo&&memo.sections?(memo.sections.risks||''):'',
-    catalysts: memo&&memo.sections?(memo.sections.catalysts||''):'',
-    conviction: memo?memo.conviction:0,
-    recentLogs: state.entries
-      .filter(e=>e.tickers.some(t=>t.replace(/^\$/,'').toUpperCase()===s))
-      .sort((a,b)=>new Date(b.ts)-new Date(a.ts))
-      .slice(0,3)
-      .map(e=>({date:fmtDateShort(e.ts),text:e.text.slice(0,300)})),
-  };
-}
-
-function buildNewsPrompt(ctx,winKey){
-  const w=NEWS_WINDOWS[winKey]||currentWindow();
-  const cutoff=new Date(Date.now()-w.days*86400000).toISOString().slice(0,10);
-  const today=new Date().toISOString().slice(0,10);
-
-  const hasMemo=!!(ctx.thesis||ctx.risks||ctx.catalysts);
-  const thesisBlock=hasMemo
-    ? `The investor's own memo on this holding:
-${ctx.thesis?`THESIS: ${ctx.thesis}`:''}
-${ctx.risks?`RISKS: ${ctx.risks}`:''}
-${ctx.catalysts?`CATALYSTS: ${ctx.catalysts}`:''}
-${ctx.conviction?`CONVICTION: ${ctx.conviction}/5`:''}`
-    : `The investor has not written a memo for this holding yet. Assess relevance against a generic long-horizon thesis for a ${ctx.sector||'resources'} company${ctx.geography?' operating in '+ctx.geography:''}: does this news change the resource or reserve picture, the funding position, the permitting or political risk, management's credibility, or the path to production and cash flow?`;
-
-  const recent=ctx.recentLogs.length
-    ? `\nThe investor's recent notes on this holding:\n`+ctx.recentLogs.map(l=>`- [${l.date}] ${l.text}`).join('\n')
-    : '';
-
-  return `You are checking recent news for ONE company on behalf of a long-horizon private investor. This is a focused single-company task — give it your full attention.
-
-COMPANY: ${ctx.legalName||ctx.symbol}
-TICKER: ${ctx.symbol}${ctx.sector?`\nSECTOR: ${ctx.sector}`:''}${ctx.geography?`\nGEOGRAPHY: ${ctx.geography}`:''}${ctx.inPortfolio?`\nPORTFOLIO WEIGHT: ${(ctx.weight*100).toFixed(1)}%`:'\nNOT HELD — watchlist only.'}
-
-${thesisBlock}${recent}
-
-TIME WINDOW — STRICT
-Today is ${today}. Report ONLY announcements published on or after ${cutoff} (${w.phrase}).
-${w.note}
-Anything published before ${cutoff} must be excluded, however interesting it is.
-
-IDENTIFY THE RIGHT COMPANY
-Small resource companies routinely share ticker symbols across exchanges. Confirm you have the correct company using the legal name and geography above before reporting anything. If you cannot confirm it with confidence, return an empty items array and explain the ambiguity in "overall". Never guess.
-
-SOURCE PRIORITY
-1. Official regulatory announcements — RNS (LSE/AIM), SEDAR+ (TSX/TSX-V), ASX announcements, SEC EDGAR filings.
-2. The company's own press releases and investor relations pages.
-3. Reputable financial media, and only where it reports something material that the above have not covered.
-Ignore promotional content, paid research, forum posts, and speculative commentary. Prefer the primary document over any article describing it, and link to the primary document.
-
-SEARCH PROPERLY
-Search for this specific company's announcements in the window. Check the company's own news or investor relations page and the relevant exchange's announcement feed. Do not rely on memory — you must actually search, and the links you return must be to documents you found.
-
-ON RETURNING NOTHING
-An empty items array is a correct and common answer, especially over a short window. Most companies announce nothing on most days. Do not pad the list, do not stretch the date range, and do not report routine or stale items to appear thorough. Reporting nothing when nothing happened is the right behaviour and is more useful than noise.
-
-OUTPUT
-Return ONLY valid JSON. No markdown fences, no preamble, no commentary.
-
-{
-  "items": [
-    {
-      "date": "YYYY-MM-DD",
-      "headline": "the announcement's actual title",
-      "source": "RNS | SEDAR+ | ASX | SEC | Company release | publication name",
-      "url": "direct link to the original document",
-      "official": true,
-      "summary": "2-3 sentences on what was actually announced, in your own words",
-      "relevance": "What this means for the thesis above. Be specific. Say plainly if it changes nothing. If it strengthens or weakens a particular part of the thesis or a stated risk, name which part.",
-      "impact": "positive" | "negative" | "neutral",
-      "material": true
-    }
-  ],
-  "overall": "2-3 sentences: taken together, what has changed for this holding? If nothing was announced in the window, say exactly that."
-}
-
-Order items newest first. Set "material" to false for routine filings that change nothing (AGM notices, TR-1s, option grants, holding notifications). Set "official" to false for media coverage. Every date must fall on or after ${cutoff}.`;
-}
-
-/* ── The one request. ──────────────────────────────────────────────
-   Swap this function to change news source (real RNS/SEDAR feeds later).
-   Errors are surfaced verbatim: whatever Google says is what you see. */
-async function fetchNewsFor(symbol,winKey){
-  if(!state.geminiKey)throw new Error('No Gemini API key set');
-  if(!geminiModel())throw new Error('No model selected — open settings and tap "Find models"');
-  const win=winKey||state.newsWindow;
-  const ctx=tickerContext(symbol);
-  const prompt=buildNewsPrompt(ctx,win);
-
-  lastRequestAt=Date.now();
-
-  const res=await fetch(`${GEMINI_ENDPOINT}/${geminiModel()}:generateContent`,{
-    method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'x-goog-api-key':state.geminiKey,
-    },
-    body:JSON.stringify({
-      contents:[{parts:[{text:prompt}]}],
-      // Grounding can be disabled to isolate whether it is what triggers a 429.
-      // Without it the model cannot search and will answer from training data —
-      // useless for real news, but a clean diagnostic.
-      ...(state.groundingOff?{}:{tools:[{google_search:{}}]}),
-      generationConfig:{temperature:0.2},
-    })
-  });
-
-  if(!res.ok){
-    // Report exactly what Google returned. No interpretation.
-    let raw='';
-    try{
-      const body=await res.json();
-      raw=body?.error?.message||JSON.stringify(body);
-      const details=body?.error?.details;
-      if(Array.isArray(details)){
-        const q=details.find(d=>(d['@type']||'').includes('QuotaFailure'));
-        if(q&&q.violations&&q.violations.length){
-          const v=q.violations[0];
-          // The metric names WHICH bucket was hit — the key diagnostic. Grounded
-          // requests land in generate_content_free_tier_requests, not the larger
-          // search-grounding quota, which is why Cloud Console can look untouched.
-          if(v.quotaMetric)raw+=`\n\nQuota metric: ${v.quotaMetric}`;
-          if(v.quotaId)raw+=`\nQuota id: ${v.quotaId}`;
-          if(v.quotaValue)raw+=`\nLimit: ${v.quotaValue}`;
-        }
-        const r=details.find(d=>(d['@type']||'').includes('RetryInfo'));
-        if(r&&r.retryDelay)raw+=`\nGoogle suggests retrying after ${r.retryDelay}`;
-      }
-    }catch(_){
-      raw=`HTTP ${res.status}`;
-    }
-    const err=new Error(raw);
-    err.status=res.status;
-    err.raw=raw;
-    throw err;
-  }
-
-  const data=await res.json();
-  const cand=data.candidates&&data.candidates[0];
-  if(!cand)throw new Error('Gemini returned no candidates');
-
-  const text=(cand.content&&cand.content.parts||[]).map(p=>p.text||'').join('');
-  const grounding=cand.groundingMetadata||{};
-  const sources=(grounding.groundingChunks||[])
-    .map(ch=>ch.web).filter(Boolean)
-    .map(w=>({title:w.title||'',uri:w.uri||''}));
-
-  const parsed=parseNewsJson(text);
-  const w=NEWS_WINDOWS[win]||currentWindow();
-  const cutoffMs=Date.now()-w.days*86400000-86400000;
-  const items=(parsed.items||[]).filter(it=>{
-    if(!it||!it.date)return true;
-    const d=new Date(it.date).getTime();
-    return isNaN(d)?true:d>=cutoffMs;
-  });
-
-  return {
-    symbol:ctx.symbol,
-    legalName:ctx.legalName,
-    items,
-    overall:parsed.overall||'',
-    sources,
-    hadMemo:!!(ctx.thesis||ctx.risks||ctx.catalysts),
-    window:win,
-    ungrounded:!!state.groundingOff,
-    fetchedAt:new Date().toISOString(),
-  };
-}
-
-function parseNewsJson(text){
-  let t=(text||'').trim();
-  t=t.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
-  try{return JSON.parse(t);}catch(_){}
-  const a=t.indexOf('{'),b=t.lastIndexOf('}');
-  if(a>=0&&b>a){ try{return JSON.parse(t.slice(a,b+1));}catch(_){} }
-  return {items:[],overall:'Could not read the response. Try again.'};
-}
-
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-
-/* One ticker, one request. No retries, no budget guessing. */
-async function fetchNewsForTicker(symbol,opts){
-  const s=symbol.replace(/^\$/,'').toUpperCase();
-  if(!state.geminiKey){openGeminiSetup();return 'error';}
-  if(state.newsLoading[s])return 'error';
-  const silent=opts&&opts.silent;
-  const win=(opts&&opts.window)||state.newsWindow;
-
-  // Respect the per-minute gap. Grounded requests are rate-limited hard.
-  const wait=msUntilNextAllowed();
-  if(wait>0){
-    if(!silent)showToast(`Waiting ${Math.ceil(wait/1000)}s — free tier allows ~5 requests/min`);
-    await sleep(wait);
-  }
-  if(state.newsBatch&&state.newsBatch.cancel)return 'aborted';
-
-  state.newsLoading[s]=true;render();
-  try{
-    const digest=await fetchNewsFor(s,win);
-    state.newsCache[s]=digest;
-    save();
-    markDirty();
-    return 'ok';
-  }catch(e){
-    state.newsCache[s]={
-      symbol:s,
-      error:e.raw||e.message,
-      status:e.status||0,
-      fetchedAt:new Date().toISOString(),
-      items:[],
-    };
-    save();
-    if(!silent)showToast(`${s}: ${(e.message||'failed').slice(0,60)}`);
-    return 'error';
-  }finally{
-    delete state.newsLoading[s];
-    render();
-  }
-}
-
-/* Which tickers have no digest, or one older than the window's shelf life. */
-function staleTickers(universe){
-  const w=currentWindow();
-  const cutoff=Date.now()-w.staleMs;
-  const stale=(universe||newsUniverse()).filter(t=>{
-    const c=state.newsCache[t.symbol];
-    if(!c||!c.fetchedAt)return true;
-    if(c.error)return true;
-    if(c.window&&c.window!==state.newsWindow)return true;
-    return new Date(c.fetchedAt).getTime()<cutoff;
-  });
-  // Longest-neglected and largest positions first.
-  return stale.sort((a,b)=>{
-    const ca=state.newsCache[a.symbol], cb=state.newsCache[b.symbol];
-    const ta=ca&&ca.fetchedAt&&!ca.error?new Date(ca.fetchedAt).getTime():0;
-    const tb=cb&&cb.fetchedAt&&!cb.error?new Date(cb.fetchedAt).getTime():0;
-    if(ta!==tb)return ta-tb;
-    return (b.weight||0)-(a.weight||0);
-  });
-}
-
-/* Sequential run. Stops on the first 429 — on the free tier that means the
-   grounded allowance is gone and continuing just burns time. */
-async function runNewsBatch(tickers){
-  if(!state.geminiKey){openGeminiSetup();return;}
-  if(!tickers.length){showToast('Nothing to check');return;}
-  if(state.newsBatch){showToast('Already running');return;}
-
-  const w=currentWindow();
-  const mins=Math.ceil(tickers.length*MIN_REQUEST_GAP_MS/60000);
-  if(!confirm(
-    `Check ${tickers.length} ticker${tickers.length===1?'':'s'} over ${w.phrase}?\n\n`+
-    `Paced at one every ${MIN_REQUEST_GAP_MS/1000}s — about ${mins} minute${mins===1?'':'s'}.\n\n`+
-    `The free tier allows roughly 20 grounded requests per day, so a long run may stop early.`
-  ))return;
-
-  state.newsBatch={total:tickers.length,done:0,ok:0,failed:0,current:null,cancel:false,paused:false,stoppedBy:null};
-  render();
-
-  for(let i=0;i<tickers.length;i++){
-    if(state.newsBatch.cancel)break;
-    while(state.newsBatch.paused&&!state.newsBatch.cancel)await sleep(300);
-    if(state.newsBatch.cancel)break;
-
-    const sym=tickers[i].symbol||tickers[i];
-    state.newsBatch.current=sym;render();
-
-    const result=await fetchNewsForTicker(sym,{silent:true});
-    if(result==='aborted')break;
-
-    state.newsBatch.done++;
-    if(result==='ok'){state.newsBatch.ok++;}
-    else{
-      state.newsBatch.failed++;
-      const c=state.newsCache[sym];
-      if(c&&c.status===429){state.newsBatch.stoppedBy=c.error;break;}
-    }
-    render();
-  }
-
-  const b=state.newsBatch;
-  const {ok:okCount,failed,cancel,stoppedBy}=b;
-  state.newsBatch=null;save();render();
-
-  if(stoppedBy)      showToast(`Stopped after ${okCount} — rate limited`);
-  else if(cancel)    showToast(`Stopped — ${okCount} checked`);
-  else if(failed)    showToast(`Checked ${okCount}, ${failed} failed`);
-  else               showToast(`Checked ${okCount} ticker${okCount===1?'':'s'}`);
-}
-
-async function fetchAllNews(){ await runNewsBatch(newsUniverse()); }
-async function fetchStaleNews(){
-  const stale=staleTickers();
-  if(!stale.length){showToast('Everything is current');return;}
-  await runNewsBatch(stale);
-}
-
-function pauseNewsBatch(){ if(state.newsBatch){state.newsBatch.paused=!state.newsBatch.paused;render();} }
-function cancelNewsBatch(){ if(state.newsBatch){state.newsBatch.cancel=true;state.newsBatch.paused=false;render();} }
-
-function renderBatchBar(){
-  const b=state.newsBatch;
-  if(!b)return '<div id="batchBar"></div>';
-  const pct=b.total?Math.round(b.done/b.total*100):0;
-  const status=b.paused?'paused':(b.current?`searching ${b.current}…`:'starting…');
-  return `<div id="batchBar" style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:12px">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
-      <div style="min-width:0">
-        <div style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">${b.done} of ${b.total}${b.failed?` · ${b.failed} failed`:''}</div>
-        <div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${status}</div>
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn btn-ghost btn-sm" onclick="pauseNewsBatch()">${b.paused?'Resume':'Pause'}</button>
-        <button class="btn btn-ghost btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="cancelNewsBatch()">Stop</button>
-      </div>
-    </div>
-    <div style="height:4px;background:var(--surface3);border-radius:2px;overflow:hidden">
-      <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:2px;transition:width .3s"></div>
-    </div>
-  </div>`;
-}
-
-function clearNewsErrors(){
-  let n=0;
-  Object.keys(state.newsCache).forEach(k=>{
-    if(state.newsCache[k]&&state.newsCache[k].error){delete state.newsCache[k];n++;}
-  });
-  save();render();
-  showToast(n?`Cleared ${n} error${n===1?'':'s'}`:'No errors to clear');
-}
-
-function setNewsWindow(w){ if(NEWS_WINDOWS[w]){state.newsWindow=w;save();render();} }
-function setAskWindow(w){ if(NEWS_WINDOWS[w]){state.newsAskWindow=w;render();} }
-
-/* ── Gemini settings ── */
-function openGeminiSetup(){
-  const root=document.getElementById('modalRoot');
-  const has=!!state.geminiKey;
-  const t=state.geminiTest;
-
-  const testBlock=(()=>{
-    if(!t)return '';
-    if(t.status==='testing')return `<div class="news-config" style="margin-bottom:12px"><span class="dot pulse" style="background:var(--accent)"></span> Testing…</div>`;
-    if(t.status==='ok')return `<div class="news-config" style="background:var(--accent2);color:var(--accent);margin-bottom:12px"><strong>Working</strong><br>${t.detail}</div>`;
-    return `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px">
-      <strong>${t.status==='network'?'Network error':'HTTP '+t.status}</strong> — Google's response:<br>
-      <span style="font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-word">${t.detail}</span>
-    </div>`;
-  })();
-
-  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-    <div class="modal">
-      <div class="modal-header"><div class="modal-title">Gemini</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
-      <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:14px">
-        News digests use Gemini with Search grounding.<br>
-        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">Get a free key at AI Studio →</a>
-      </div>
-      <div class="field-row">
-        <div class="field-label">API key</div>
-        <input class="field-input" id="geminiKeyInput" type="password" placeholder="AQ.… or AIza…" value="${state.geminiKey||''}" style="font-family:var(--font-mono)">
-      </div>
-      <div class="field-row">
-        <div class="field-label">Model ${state.geminiModels.length?`<span style="opacity:.5">— ${state.geminiModels.length} available</span>`:''}</div>
-        ${state.modelsLoading
-          ? `<div class="news-config"><span class="dot pulse" style="background:var(--accent)"></span> Asking Google which models this key can use…</div>`
-          : (!state.geminiModels.length
-            ? `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt)">
-                 No model list yet. Tap <strong>Find models</strong> below — the app will
-                 ask Google what this key can actually call, rather than guessing.
-               </div>`
-            : `<div style="display:flex;flex-direction:column;gap:5px;max-height:200px;overflow-y:auto">
-                ${state.geminiModels.map(m=>{
-                  const sel=geminiModel()===m.id;
-                  return `<div onclick="setGeminiModel('${m.id}')" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r);border:1px solid ${sel?'var(--accent)':'var(--border2)'};background:${sel?'var(--accent2)':'transparent'};cursor:pointer">
-                    <div style="min-width:0">
-                      <div style="font-size:13px;font-weight:500;color:${sel?'var(--accent)':'var(--ink)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.label||m.id}</div>
-                      <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.id}</div>
-                    </div>
-                    ${sel?'<span style="color:var(--accent);flex-shrink:0">✓</span>':''}
-                  </div>`;
-                }).join('')}
-              </div>
-              <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-top:6px">
-                From Google's ListModels. ${state.geminiModelsAt?`Checked ${fmtDateRelative(state.geminiModelsAt)}.`:''}
-              </div>`)
-        }
-      </div>
-      ${testBlock}
-      <div class="field-row">
-        <div class="field-label">Diagnostic</div>
-        <div onclick="toggleGrounding()" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-radius:var(--r);border:1px solid ${state.groundingOff?'var(--danger)':'var(--border2)'};background:${state.groundingOff?'var(--warn-bg)':'transparent'};cursor:pointer">
-          <div style="min-width:0">
-            <div style="font-size:13px;font-weight:500;color:${state.groundingOff?'var(--warn-txt)':'var(--ink)'}">Search grounding ${state.groundingOff?'OFF':'on'}</div>
-            <div style="font-size:11px;color:var(--ink3);line-height:1.4">${state.groundingOff
-              ? 'Digests will be worthless — the model cannot search. Use only to test whether grounding is what causes a 429.'
-              : 'Normal. Turn off only to diagnose rate-limit errors.'}</div>
-          </div>
-          <div style="width:38px;height:22px;border-radius:11px;background:${state.groundingOff?'var(--danger)':'var(--accent)'};position:relative;flex-shrink:0">
-            <div style="width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:2px;left:${state.groundingOff?'2px':'18px'};transition:left .15s"></div>
-          </div>
-        </div>
-      </div>
-      <div class="news-config" style="margin-bottom:12px;line-height:1.6">
-        <strong>On rate limits</strong><br>
-        Requests using Search grounding are counted against the free tier's
-        generate-content quota — roughly <strong>20 per day</strong> and
-        <strong>5 per minute</strong> — not the larger grounding quota shown in
-        Cloud Console. So you can see plenty of quota remaining and still be
-        refused. Requests are paced ${MIN_REQUEST_GAP_MS/1000}s apart and Google's
-        own message is shown verbatim.
-      </div>
-      <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:12px">
-        Stored in this browser only. Never sent anywhere but Google.
-      </div>
-      <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
-        ${has?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearGeminiKey()">Remove</button>`:''}
-        <button class="btn btn-ghost" onclick="findModels()">Find models</button>
-        <button class="btn btn-ghost" onclick="testGeminiKey()">Test</button>
-        <button class="btn btn-primary" onclick="saveGeminiKey()">Save</button>
-      </div>
-    </div>
-  </div>`;
-  setTimeout(()=>document.getElementById('geminiKeyInput')?.focus(),100);
-}
-
-async function findModels(){
-  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
-  if(typed)state.geminiKey=typed;
-  if(!state.geminiKey){showToast('Enter a key first');return;}
-  state.modelsLoading=true;state.geminiTest=null;openGeminiSetup();
-  try{
-    const models=await listGeminiModels();
-    state.modelsLoading=false;openGeminiSetup();
-    showToast(models.length?`Found ${models.length} — using ${geminiModel()}`:'No usable models returned');
-  }catch(e){
-    state.modelsLoading=false;
-    state.geminiTest={status:'ListModels failed',detail:e.message};
-    openGeminiSetup();
-  }
-}
-
-function toggleGrounding(){
-  state.groundingOff=!state.groundingOff;
-  const key=document.getElementById('geminiKeyInput')?.value?.trim();
-  if(key)state.geminiKey=key;
-  save();openGeminiSetup();
-}
-
-function setGeminiModel(m){
-  const key=document.getElementById('geminiKeyInput')?.value?.trim();
-  if(key)state.geminiKey=key;          // don't lose a key being typed
-  state.geminiModel=m;
-  state.geminiTest=null;               // a past result says nothing about a new model
-  save();openGeminiSetup();
-}
-
-/* One tiny request, no grounding — separates "is the key good?" from
-   "is the grounded quota exhausted?". */
-async function testGeminiKey(){
-  const typed=document.getElementById('geminiKeyInput')?.value?.trim();
-  const key=typed||state.geminiKey;
-  if(!key){showToast('Enter a key first');return;}
-  if(typed)state.geminiKey=typed;
-
-  if(!geminiModel()){showToast('Tap "Find models" first');return;}
-  state.geminiTest={status:'testing'};save();openGeminiSetup();
-  try{
-    const res=await fetch(`${GEMINI_ENDPOINT}/${geminiModel()}:generateContent`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-goog-api-key':key},
-      body:JSON.stringify({
-        contents:[{parts:[{text:'Reply with the single word: OK'}]}],
-        generationConfig:{maxOutputTokens:10},
-      })
-    });
-    if(res.ok){
-      state.geminiTest={status:'ok',detail:`${geminiModel()} responded. Note this test does not use Search grounding, which has tighter limits.`};
-    }else{
-      let raw='';
-      try{
-        const body=await res.json();
-        raw=body?.error?.message||JSON.stringify(body);
-        const d=body?.error?.details;
-        if(Array.isArray(d)){
-          const q=d.find(x=>(x['@type']||'').includes('QuotaFailure'));
-          if(q&&q.violations&&q.violations.length){
-            const v=q.violations[0];
-            if(v.quotaMetric)raw+=`\n\nQuota metric: ${v.quotaMetric}`;
-            if(v.quotaId)raw+=`\nQuota id: ${v.quotaId}`;
-            if(v.quotaValue)raw+=`\nLimit: ${v.quotaValue}`;
-          }
-          const r=d.find(x=>(x['@type']||'').includes('RetryInfo'));
-          if(r&&r.retryDelay)raw+=`\nRetry after ${r.retryDelay}`;
-        }
-      }catch(_){ raw=`HTTP ${res.status}`; }
-      state.geminiTest={status:res.status,detail:raw};
-    }
-  }catch(err){
-    state.geminiTest={status:'network',detail:err.message};
-  }
-  save();openGeminiSetup();
-}
-
-function saveGeminiKey(){
-  const k=(document.getElementById('geminiKeyInput')?.value||'').trim();
-  if(!k){showToast('Enter a key');return;}
-  state.geminiKey=k;state.geminiTest=null;save();closeModal();render();showToast('Key saved');
-}
-function clearGeminiKey(){
-  if(!confirm('Remove the Gemini key? Cached digests are kept.'))return;
-  state.geminiKey=null;state.geminiTest=null;save();closeModal();render();showToast('Key removed');
-}
-
-/* ── News tab ── */
-function renderNews(){
-  if(!state.geminiKey){
-    return `<div class="empty-state">
-      <div class="empty-icon">📰</div>
-      <div class="empty-title">Connect Gemini</div>
-      <div class="empty-body">News digests need a Gemini API key.</div>
-      <button class="btn btn-primary" style="margin-top:16px" onclick="openGeminiSetup()">Add API key</button>
-    </div>`;
-  }
-
-  const universe=newsUniverse();
-  if(!universe.length){
-    return `<div class="empty-state"><div class="empty-icon">📰</div><div class="empty-title">Nothing to watch yet</div><div class="empty-body">Import a portfolio or log an entry with a $TICKER.</div></div>`;
-  }
-
-  if(state.activeNewsTicker)return renderNewsDetail(state.activeNewsTicker);
-
-  const anyLoading=Object.keys(state.newsLoading).length>0;
-  const batching=!!state.newsBatch;
-  const staleCount=staleTickers(universe).length;
-  const cached=universe.filter(t=>state.newsCache[t.symbol]&&!state.newsCache[t.symbol].error).length;
-  const materialCount=universe.reduce((n,t)=>{
-    const c=state.newsCache[t.symbol];
-    if(!c||!c.items)return n;
-    return n+c.items.filter(i=>i.material!==false).length;
-  },0);
-  const errCount=Object.values(state.newsCache).filter(c=>c&&c.error).length;
-
-  const windowPicker=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-    <span class="section-label" style="margin:0">Window</span>
-    <div style="display:flex;gap:4px">
-      ${Object.keys(NEWS_WINDOWS).map(k=>`<div class="filter-chip ${state.newsWindow===k?'active':''}" onclick="setNewsWindow('${k}')">${NEWS_WINDOWS[k].label}</div>`).join('')}
-    </div>
-  </div>`;
-
-  const toolbar=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-    <button class="btn btn-primary btn-sm" ${anyLoading||batching||!staleCount?'disabled':''} onclick="fetchStaleNews()">↻ Check ${staleCount}</button>
-    <button class="btn btn-ghost btn-sm" ${anyLoading||batching?'disabled':''} onclick="fetchAllNews()">Recheck all</button>
-    ${errCount?`<button class="btn btn-ghost btn-sm" onclick="clearNewsErrors()">Clear ${errCount} error${errCount===1?'':'s'}</button>`:''}
-    <button class="btn btn-ghost btn-sm" onclick="openGeminiSetup()">⚙</button>
-  </div>`;
-
-  const note=state.groundingOff
-    ? `<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:10px">
-        <strong>Search grounding is OFF</strong> — results are not real news. Diagnostic mode only.
-      </div>`
-    : `<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:10px;text-align:center">
-        ${geminiModel()||'no model selected'} · free tier allows ~20 grounded requests/day
-      </div>`;
-
-  const summary=cached?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-bottom:12px;text-align:center">${cached} of ${universe.length} checked · ${materialCount} material item${materialCount===1?'':'s'}</div>`:'';
-
-  const rows=universe.map(t=>{
-    const c=state.newsCache[t.symbol];
-    const loading=!!state.newsLoading[t.symbol];
-    const tag=state.tickerTags[t.symbol]||{};
-    const holding=holdingFor(t.symbol,'all');
-    const name=tag.legalName||tag.name||(holding?holding.name:'')||'';
-
-    let right,statusLine;
-    if(loading){
-      right=`<span class="dot pulse" style="background:var(--accent)"></span>`;
-      statusLine=`<span style="color:var(--accent)">searching…</span>`;
-    }else if(!c){
-      right=`<button class="btn btn-ghost btn-sm" ${batching?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Fetch</button>`;
-      statusLine=`<span style="color:var(--ink3)">not checked</span>`;
-    }else if(c.error){
-      right=`<button class="btn btn-ghost btn-sm" ${batching?'disabled':''} onclick="event.stopPropagation();fetchNewsForTicker('${t.symbol}')">Retry</button>`;
-      statusLine=`<span style="color:var(--warn-txt)">${c.status===429?'rate limited':(c.error||'failed').slice(0,38)}</span>`;
-    }else{
-      const material=(c.items||[]).filter(i=>i.material!==false);
-      const pos=material.filter(i=>i.impact==='positive').length;
-      const neg=material.filter(i=>i.impact==='negative').length;
-      const pills=[
-        pos?`<span style="color:var(--accent)">▲${pos}</span>`:'',
-        neg?`<span style="color:var(--danger)">▼${neg}</span>`:'',
-      ].filter(Boolean).join(' ');
-      const winLabel=c.window&&c.window!==state.newsWindow?`<span style="color:var(--warn-txt)"> ${NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window].label:c.window}</span>`:'';
-      right=`<div style="text-align:right"><div style="font-family:var(--font-mono);font-size:12px">${material.length?pills||material.length:'—'}</div><div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${fmtDateRelative(c.fetchedAt)}${winLabel}</div></div>`;
-      statusLine=material.length
-        ?`<span style="color:var(--ink2)">${material.length} item${material.length===1?'':'s'}</span>`
-        :`<span style="color:var(--ink3)">nothing announced</span>`;
-    }
-
-    const weightLine=t.inPortfolio?`${(t.weight*100).toFixed(1)}%`:'watchlist';
-    return `<div class="ticker-row" onclick="openNewsDetail('${t.symbol}')" style="align-items:center">
-      <div style="min-width:0;flex:1">
-        <div style="display:flex;align-items:baseline;gap:6px">
-          <span class="ticker-name">${t.symbol}</span>
-          <span style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${weightLine}</span>
-        </div>
-        <div style="font-size:11px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</div>
-        <div style="font-size:10px;font-family:var(--font-mono);margin-top:1px">${statusLine}</div>
-      </div>
-      <div style="margin-left:10px;flex-shrink:0">${right}</div>
-    </div>`;
-  }).join('');
-
-  return windowPicker+toolbar+note+renderBatchBar()+summary+`<div class="ticker-list" style="margin-bottom:60px">${rows}</div>`;
-}
-
-function openNewsFor(sym){
-  const s=sym.replace(/^\$/,'').toUpperCase();
-  setTab('news',{ticker:s});
-  if(!state.newsCache[s]&&state.geminiKey)fetchNewsForTicker(s);
-}
-function openNewsDetail(sym){state.activeNewsTicker=sym;state.newsAskWindow=null;render();}
-function closeNewsDetail(){state.activeNewsTicker=null;render();}
-
-function renderNewsDetail(sym){
-  const c=state.newsCache[sym];
-  const ctx=tickerContext(sym);
-  const loading=!!state.newsLoading[sym];
-  const askWin=state.newsAskWindow||state.newsWindow;
-
-  const header=`<div style="margin-bottom:14px">
-    <button class="back-btn" onclick="closeNewsDetail()" style="margin-bottom:10px">← News</button>
-    <div style="font-family:var(--font-serif);font-size:24px">${sym}</div>
-    ${ctx.legalName?`<div style="font-size:13px;color:var(--ink3);font-family:var(--font-mono)">${ctx.legalName}</div>`:''}
-    <div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap">
-      <span class="section-label" style="margin:0">Check</span>
-      ${Object.keys(NEWS_WINDOWS).map(k=>`<div class="filter-chip ${askWin===k?'active':''}" onclick="setAskWindow('${k}')">${NEWS_WINDOWS[k].label}</div>`).join('')}
-      <button class="btn btn-primary btn-sm" ${loading?'disabled':''} onclick="fetchNewsForTicker('${sym}',{window:'${askWin}'})" style="margin-left:auto">${loading?'Searching…':(c?'↻ Refresh':'Fetch')}</button>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;font-family:var(--font-mono);font-size:11px">
-      ${ctx.inPortfolio?`<span style="color:var(--ink3)">${(ctx.weight*100).toFixed(1)}% of portfolio</span>`:'<span style="color:var(--ink3)">watchlist</span>'}
-      ${ctx.sector?`<span style="color:var(--hash-txt)">${ctx.sector}</span>`:''}
-      ${ctx.memo?`<span style="color:var(--accent);cursor:pointer" onclick="setTab('memos',{memoId:'${ctx.memo.id}'})">memo →</span>`:'<span style="color:var(--warn-txt)">no memo</span>'}
-    </div>
-  </div>`;
-
-  if(loading){
-    return header+`<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-title">Searching</div><div class="empty-body">Looking for regulatory announcements and company releases…</div></div>`;
-  }
-  if(!c){
-    return header+`<div class="empty-state"><div class="empty-icon">📰</div><div class="empty-body">No digest yet for ${sym}.</div></div>`;
-  }
-  if(c.error){
-    return header+`<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt)">
-      <strong>${c.status?`HTTP ${c.status}`:'Failed'}</strong> — Google's response:<br>
-      <span style="font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-word">${c.error}</span>
-    </div>`;
-  }
-
-  const items=c.items||[];
-  const material=items.filter(i=>i.material!==false);
-  const routine=items.filter(i=>i.material===false);
-  const usedWindow=c.window&&NEWS_WINDOWS[c.window]?NEWS_WINDOWS[c.window]:currentWindow();
-
-  const ungroundedWarn=c.ungrounded?`<div class="news-config" style="background:var(--warn-bg);color:var(--warn-txt);margin-bottom:12px"><strong>Fetched without Search grounding</strong> — the model could not search, so this is not real news. Diagnostic result only.</div>`:'';
-  const overall=c.overall?`<div style="background:var(--accent2);border:1px solid var(--accent3);border-radius:var(--r2);padding:12px 14px;margin-bottom:14px">
-    <div class="section-label" style="margin-bottom:6px;color:var(--accent)">The picture</div>
-    <div style="font-size:14px;line-height:1.6;color:var(--ink)">${c.overall}</div>
-    ${!c.hadMemo?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);margin-top:8px">Assessed against a generic thesis — write a memo for ${sym} to sharpen this.</div>`:''}
-  </div>`:'';
-
-  const renderItem=(n)=>{
-    const col=n.impact==='positive'?'var(--accent)':n.impact==='negative'?'var(--danger)':'var(--ink3)';
-    const mark=n.impact==='positive'?'▲':n.impact==='negative'?'▼':'●';
-    return `<div class="entry-card" style="margin-bottom:10px">
-      <div class="entry-meta">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span style="color:${col};font-size:12px">${mark}</span>
-          <span class="entry-date">${n.date||''}</span>
-          ${n.source?`<span style="font-family:var(--font-mono);font-size:10px;padding:1px 6px;border-radius:4px;background:${n.official?'var(--tag-bg)':'var(--surface3)'};color:${n.official?'var(--tag-txt)':'var(--ink3)'}">${n.source}</span>`:''}
-        </div>
-      </div>
-      <div style="font-size:14px;font-weight:500;color:var(--ink);line-height:1.45;margin-bottom:6px">${n.headline||''}</div>
-      ${n.summary?`<div style="font-size:13px;color:var(--ink2);line-height:1.6;margin-bottom:8px">${n.summary}</div>`:''}
-      ${n.relevance?`<div style="font-size:13px;line-height:1.6;color:var(--ink);border-left:2px solid ${col};padding-left:10px;margin-bottom:8px">${n.relevance}</div>`:''}
-      ${n.url?`<a href="${n.url}" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;color:var(--accent);text-decoration:none">Read the original →</a>`:''}
-    </div>`;
-  };
-
-  const materialHtml=material.length
-    ? `<div class="section-label">Material — ${material.length}</div>`+material.map(renderItem).join('')
-    : `<div class="news-config" style="margin-bottom:14px">Nothing announced in ${usedWindow.phrase}.</div>`;
-
-  const routineHtml=routine.length
-    ? `<div class="section-label" style="margin-top:8px">Routine — ${routine.length}</div>`+routine.map(renderItem).join('')
-    : '';
-
-  const sourcesHtml=(c.sources&&c.sources.length)
-    ? `<div class="news-panel" style="margin-bottom:60px">
-        <div class="news-panel-header">Sources consulted</div>
-        ${c.sources.slice(0,10).map(s=>`<div class="news-item"><a href="${s.uri}" target="_blank" rel="noopener" style="color:var(--ink2);text-decoration:none;font-size:12px">${s.title||s.uri}</a></div>`).join('')}
-      </div>`
-    : '<div style="margin-bottom:60px"></div>';
-
-  const stamp=`<div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);text-align:center;margin:14px 0">Checked ${fmtDateRelative(c.fetchedAt)} over ${usedWindow.phrase}</div>`;
-
-  return header+ungroundedWarn+overall+materialHtml+routineHtml+stamp+sourcesHtml;
-}
 
 /* ══════════════════════════════════════
    TICKERS TAB
@@ -2291,6 +1434,110 @@ function renderNewsDetail(sym){
    and sold positions all keep their history here.
 ══════════════════════════════════════ */
 
+/* ══ Tidying strays ════════════════════════════════════════════════════
+   Two ways a ticker outlives its reason for existing:
+
+   1. An entry's `tickers` list is computed when it is saved and then frozen.
+      Edit the text and it is recomputed; never touch the entry again and an
+      old mis-parse (the $Meridian → $M phantom, fixed earlier) persists.
+   2. A tag record survives its entries on purpose — that is what keeps your
+      sector work across re-imports — but one with no entries, no holding,
+      no memo and no actual tag content is simply debris.
+
+   Both are reported, never repaired silently. The entry TEXT is the honest
+   record; `tickers` is only an index of it, so re-deriving the index changes
+   nothing you wrote. Anything carrying real content is left alone. */
+function findStrayTickers(){
+  const entryFixes=[];
+  state.entries.forEach(e=>{
+    const stored=[...new Set(e.tickers||[])].sort();
+    const derived=extractTickers(e.text||'').sort();
+    if(stored.join('|')!==derived.join('|')){
+      entryFixes.push({
+        id:e.id, ts:e.ts,
+        text:(e.text||'').slice(0,90),
+        removed:stored.filter(t=>!derived.includes(t)),
+        added:derived.filter(t=>!stored.includes(t)),
+      });
+    }
+  });
+
+  // Which symbols would still be referenced after those fixes
+  const referenced=new Set();
+  state.entries.forEach(e=>{
+    const fix=entryFixes.find(f=>f.id===e.id);
+    (fix?extractTickers(e.text||''):(e.tickers||[])).forEach(t=>referenced.add(primarySymbol(t)));
+  });
+  accountRows('all').forEach(h=>referenced.add(primarySymbol(h.symbol)));
+  state.memos.forEach(m=>referenced.add(primarySymbol(m.ticker)));
+  // A link target is referenced by whatever points at it
+  Object.keys(state.tickerTags).forEach(sym=>{
+    const link=bareSym((state.tickerTags[sym]||{}).sameAs);
+    if(link)referenced.add(link);
+  });
+
+  const MEANINGFUL=['sector','geography','stance','sameAs','name','legalName','gfTicker','note'];
+  const orphanTags=Object.keys(state.tickerTags).filter(sym=>{
+    if(referenced.has(primarySymbol(sym)))return false;
+    const t=state.tickerTags[sym]||{};
+    return !MEANINGFUL.some(k=>t[k]);   // never discard a tag with content
+  });
+
+  return {entryFixes,orphanTags,total:entryFixes.length+orphanTags.length};
+}
+
+function openTidyModal(){
+  const s=findStrayTickers();
+  const root=document.getElementById('modalRoot');
+  if(!s.total){
+    root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal">
+      <div class="modal-header"><div class="modal-title">Nothing to tidy</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+      <div style="font-size:13px;color:var(--ink2);line-height:1.7">Every ticker in the archive is backed by an entry, a holding, a memo or a tag you set.</div>
+      <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Close</button></div>
+    </div></div>`;
+    return;
+  }
+  const entryList=s.entryFixes.length?`
+    <div class="section-label" style="margin-top:4px">Entries whose tags no longer match their text — ${s.entryFixes.length}</div>
+    <div style="max-height:190px;overflow-y:auto;margin-bottom:12px">
+      ${s.entryFixes.map(f=>`<div style="padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);margin-bottom:6px">
+        <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${fmtDate(f.ts)}</div>
+        <div style="font-size:12px;color:var(--ink2);margin:3px 0;line-height:1.5">${f.text.replace(/</g,'&lt;')}${f.text.length>=90?'…':''}</div>
+        ${f.removed.length?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--danger)">drop ${f.removed.join(' ')}</div>`:''}
+        ${f.added.length?`<div style="font-size:11px;font-family:var(--font-mono);color:var(--accent)">add ${f.added.join(' ')}</div>`:''}
+      </div>`).join('')}
+    </div>`:'';
+  const orphanList=s.orphanTags.length?`
+    <div class="section-label">Empty tag records — ${s.orphanTags.length}</div>
+    <div style="font-family:var(--font-mono);font-size:12px;color:var(--ink2);background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;margin-bottom:12px">${s.orphanTags.join(' · ')}</div>`:'';
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal">
+    <div class="modal-header"><div class="modal-title">Tidy stray tickers</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:12px">
+      Your entry text is never changed — only the ticker index derived from it, and tag records holding nothing.
+    </div>
+    ${entryList}${orphanList}
+    <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-bottom:6px">
+      Anything with a sector, stance, link, memo or holding is left alone.
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="applyTidy()">Tidy ${s.total}</button>
+    </div>
+  </div></div>`;
+}
+
+function applyTidy(){
+  const s=findStrayTickers();
+  if(!s.total){closeModal();return;}
+  s.entryFixes.forEach(f=>{
+    const e=state.entries.find(x=>x.id===f.id);
+    if(e)e.tickers=extractTickers(e.text||'');   // text untouched; index re-derived
+  });
+  s.orphanTags.forEach(sym=>{ delete state.tickerTags[sym]; });
+  save();closeModal();render();markDirty();
+  showToast(`Tidied ${s.total} — ${s.entryFixes.length} entries, ${s.orphanTags.length} tag records`);
+}
+
 // Everything known about every ticker, from every source
 function tickerArchive(){
   const map={};
@@ -2298,7 +1545,7 @@ function tickerArchive(){
   // two symbols for one company converge on a single archive row.
   const touch=(sym)=>{
     const s=primarySymbol(sym);
-    if(!map[s])map[s]={symbol:s,entries:[],holding:null,holdings:[],memo:null,news:null};
+    if(!map[s])map[s]={symbol:s,entries:[],holding:null,holdings:[],memo:null};
     return map[s];
   };
 
@@ -2307,7 +1554,6 @@ function tickerArchive(){
   });
   accountRows('all').forEach(h=>{ const t=touch(h.symbol); t.holdings.push(h); });
   state.memos.forEach(m=>{ touch(m.ticker).memo=m; });
-  Object.keys(state.newsCache).forEach(s=>{ touch(s).news=state.newsCache[s]; });
   Object.keys(state.tickerTags).forEach(s=>{ touch(s); });
 
   return Object.values(map).map(t=>{
@@ -2404,6 +1650,12 @@ function renderTickers(){
     ${filterKeys.map(k=>`<div class="filter-chip ${state.tickerFilter===k?'active':''}" onclick="setTickerFilter('${k}')">${TICKER_FILTERS[k].label}${counts[k]?` ${counts[k]}`:''}</div>`).join('')}
   </div>`;
 
+  const stray=findStrayTickers();
+  const tidyBar=stray.total?`<div onclick="openTidyModal()" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;margin-bottom:10px;border-radius:var(--r);border:1px dashed var(--border2);background:var(--surface2);cursor:pointer">
+    <span style="font-size:12px;color:var(--ink2)">${stray.total} stray ticker${stray.total===1?'':'s'} — from edited entries or empty tags</span>
+    <span style="font-size:11px;font-family:var(--font-mono);color:var(--accent);white-space:nowrap">Review →</span>
+  </div>`:'';
+
   const sorts=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
     <span class="section-label" style="margin:0">Sort</span>
     <div style="display:flex;gap:4px">
@@ -2421,8 +1673,6 @@ function renderTickers(){
     const bits=[];
     if(t.entries.length)bits.push(`${t.entries.length} log${t.entries.length===1?'':'s'}`);
     if(t.memo)bits.push(`memo${t.memo.conviction?` ${t.memo.conviction}/5`:''}`);
-    const news=t.news&&t.news.items?t.news.items.filter(i=>i.material!==false).length:0;
-    if(news)bits.push(`${news} news`);
     const meta=bits.length?bits.join(' · '):'nothing yet';
 
     const lastLine=t.entries.length?fmtDateRelative(t.entries[0].ts):'';
@@ -2444,7 +1694,7 @@ function renderTickers(){
   const hashes=allHashes();
   const hashList=hashes.length?`<div class="section-label" style="margin-top:20px">Tags</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:60px">${hashes.map(([h,n])=>`<div class="tag hash" onclick="filterByHash('${h}')" style="padding:4px 12px;font-size:13px">${h} <span style="opacity:.6">${n}</span></div>`).join('')}</div>`:'<div style="margin-bottom:60px"></div>';
 
-  return filters+sorts+`<div class="ticker-list">${rows}</div>`+hashList;
+  return filters+tidyBar+sorts+`<div class="ticker-list">${rows}</div>`+hashList;
 }
 
 function renderTickerDetail(sym){
@@ -2452,8 +1702,6 @@ function renderTickerDetail(sym){
   if(!t){state.activeTicker=null;return renderTickers();}
 
   const tag=state.tickerTags[sym]||{};
-  const news=t.news;
-  const materialNews=news&&news.items?news.items.filter(i=>i.material!==false):[];
 
   // Header
   const statusLine=t.holding
@@ -2489,7 +1737,6 @@ function renderTickerDetail(sym){
     ${t.memo
       ? `<button class="btn btn-ghost btn-sm" onclick="setTab('memos',{memoId:'${t.memo.id}'})">Open memo${t.memo.conviction?` · ${t.memo.conviction}/5`:''}</button>`
       : `<button class="btn btn-primary btn-sm" onclick="prefillNewMemo('${t.symbol}')">Write memo</button>`}
-    <button class="btn btn-ghost btn-sm" onclick="openNewsFor('${t.symbol}')">${news?`News · ${materialNews.length||'0'}`:'Fetch news'}</button>
     <button class="btn btn-ghost btn-sm" onclick="composeForTicker('${t.symbol}')">+ Log entry</button>
   </div>`;
 
@@ -2499,24 +1746,6 @@ function renderTickerDetail(sym){
         <div class="section-label" style="margin-bottom:6px">Thesis</div>
         <div style="font-size:13px;line-height:1.6;color:var(--ink2)">${renderMd(t.memo.sections.thesis.slice(0,400))}${t.memo.sections.thesis.length>400?'…':''}</div>
       </div>`
-    : '';
-
-  // Latest news, if fetched
-  const newsBlock=materialNews.length
-    ? `<div class="section-label">Latest news</div>
-       <div style="margin-bottom:16px">
-         ${materialNews.slice(0,2).map(n=>{
-           const col=n.impact==='positive'?'var(--accent)':n.impact==='negative'?'var(--danger)':'var(--ink3)';
-           const mark=n.impact==='positive'?'▲':n.impact==='negative'?'▼':'●';
-           return `<div class="ticker-row" style="cursor:pointer;align-items:flex-start" onclick="openNewsFor('${t.symbol}')">
-             <span style="color:${col};margin-right:8px;flex-shrink:0">${mark}</span>
-             <div style="min-width:0;flex:1">
-               <div style="font-size:13px;color:var(--ink);line-height:1.4">${n.headline||''}</div>
-               <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3);margin-top:2px">${n.date||''}${n.source?` · ${n.source}`:''}</div>
-             </div>
-           </div>`;
-         }).join('')}
-       </div>`
     : '';
 
   // The archive itself — every log entry, newest first
@@ -2534,9 +1763,9 @@ function renderTickerDetail(sym){
            ${e.hashes.length?`<div class="entry-tags">${e.hashes.map(h=>`<span class="tag hash" onclick="event.stopPropagation();filterByHash('${h}')">${h}</span>`).join('')}</div>`:''}
          </div>`).join('')}
        </div>`
-    : `<div class="news-config" style="margin-bottom:60px">No log entries for ${t.symbol} yet.</div>`;
+    : `<div class="notice-box" style="margin-bottom:60px">No log entries for ${t.symbol} yet.</div>`;
 
-  return header+stanceBlock+actions+memoBlock+newsBlock+logBlock;
+  return header+stanceBlock+actions+memoBlock+logBlock;
 }
 
 // Jump to the Log tab with the composer open and the ticker pre-typed
@@ -2586,9 +1815,11 @@ function renderPortfolio(){
     ? `<div style="display:flex;gap:6px;margin-bottom:12px">${ACCOUNTS.map(a=>{
         const on=activeAccount()===a.id;
         const inv=investedFor(a.id);
-        return `<div onclick="setAccount('${a.id}')" style="flex:1;text-align:center;cursor:pointer;padding:8px 6px;border-radius:var(--r);border:1px solid ${on?'var(--accent)':'var(--border2)'};background:${on?'var(--accent2)':'transparent'}">
-          <div style="font-family:var(--font-serif);font-size:14px;color:${on?'var(--accent)':'var(--ink2)'}">${a.label}</div>
-          <div style="font-size:10px;font-family:var(--font-mono);color:var(--ink3)">${inv>0?'£'+Math.round(inv).toLocaleString('en-GB'):'empty'}</div>
+        // Narrower type once a third account exists, so all three fit a phone.
+        const many=ACCOUNTS.length>2;
+        return `<div onclick="setAccount('${a.id}')" style="flex:1;min-width:0;text-align:center;cursor:pointer;padding:8px 4px;border-radius:var(--r);border:1px solid ${on?'var(--accent)':'var(--border2)'};background:${on?'var(--accent2)':'transparent'}">
+          <div style="font-family:var(--font-serif);font-size:${many?'13px':'14px'};color:${on?'var(--accent)':'var(--ink2)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.label}</div>
+          <div style="font-size:${many?'9px':'10px'};font-family:var(--font-mono);color:var(--ink3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${inv>0?'£'+Math.round(inv).toLocaleString('en-GB'):'empty'}</div>
         </div>`;
       }).join('')}</div>`
     : '';
@@ -2892,7 +2123,7 @@ function openTagModal(){
         <input class="field-input" id="tagNameInput" placeholder="${(lookupCompanyName(syms[0])||'').replace(/"/g,'&quot;')}" value="${(cur.name||'').replace(/"/g,'&quot;')}">
       </div>
       <div class="field-row">
-        <div class="field-label">Full legal name <span style="opacity:.5">(helps news search find the right company)</span></div>
+        <div class="field-label">Full legal name <span style="opacity:.5">(the full registered company name)</span></div>
         <input class="field-input" id="tagLegalInput" placeholder="e.g. Snowline Gold Corp." value="${(cur.legalName||'').replace(/"/g,'&quot;')}">
       </div>
       <div class="field-row">
@@ -2905,7 +2136,7 @@ function openTagModal(){
         <datalist id="symbolList">${allPortfolioSymbols().filter(v=>v!==syms[0]).map(v=>`<option value="${v}">`).join('')}</datalist>
       </div>
       <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin:-4px 0 10px">
-        Weight, memo, news and catalysts merge under the other symbol. Nothing is rewritten — clear this field to separate them again.
+        Weight, memo and catalysts merge under the other symbol. Nothing is rewritten — clear this field to separate them again.
       </div>`:''}
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -2986,7 +2217,7 @@ function openLinkSuggestModal(list){
     <div class="modal">
       <div class="modal-header"><div class="modal-title">Same company, two symbols?</div><button class="icon-btn" onclick="closeModal()">✕</button></div>
       <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:12px">
-        These symbols carry an identical company name in your export, which usually means one company listed on two exchanges. Linking them combines weight, memo, news and catalysts.
+        These symbols carry an identical company name in your export, which usually means one company listed on two exchanges. Linking them combines weight, memo and catalysts.
       </div>
       ${items}
       <div style="font-size:11px;font-family:var(--font-mono);color:var(--ink3);line-height:1.6;margin-top:6px">
@@ -3036,7 +2267,7 @@ function openPortfolioPaste(){
       </div>
       <div class="modal-footer" style="flex-wrap:wrap;gap:8px">
         <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        ${ACCOUNTS.filter(a=>accountIsPopulated(a.id)).length>1||accountIsPopulated('odyssey')?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearAccount()">Close account</button>`:''}
+        ${ACCOUNTS.filter(a=>accountIsPopulated(a.id)).length>1||ACCOUNTS.some(a=>a.id!==DEFAULT_ACCOUNT&&accountIsPopulated(a.id))?`<button class="btn btn-ghost" style="color:var(--danger);border-color:var(--danger)" onclick="clearAccount()">Close account</button>`:''}
         <button class="btn btn-primary" onclick="importPortfolioCsv()">Import</button>
       </div>
     </div>
@@ -3275,7 +2506,7 @@ function onComposeInput(){
 }
 function submitEntry(){
   const text=document.getElementById('composeText').value.trim();if(!text)return;
-  const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),text,tickers:extractTickers(text),hashes:extractHashes(text),ts:new Date().toISOString(),showNews:false,newsItems:null,newsTs:null};
+  const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),text,tickers:extractTickers(text),hashes:extractHashes(text),ts:new Date().toISOString()};
   state.entries.unshift(entry);save();
   document.getElementById('composeText').value='';document.getElementById('composeTags').innerHTML='';document.getElementById('submitBtn').disabled=true;
   closeCompose();render();showToast('Entry saved');
@@ -3384,7 +2615,7 @@ async function getAccessToken(){
 }
 
 // A previously-saved tab may no longer exist
-if(!['log','memos','portfolio','news','tickers'].includes(state.activeTab))state.activeTab='log';
+if(!['log','memos','portfolio','tickers'].includes(state.activeTab))state.activeTab='log';
 
 let syncTimer;
 let syncInFlight=false;   // a push or pull is actually on the wire right now
@@ -3635,7 +2866,6 @@ async function pullFromDrive(opts){
     state.entries=remote.entries||[];
     state.memos=remote.memos||[];
     state.tickerTags=remote.tickerTags||{};
-    if(remote.newsCache)state.newsCache=remote.newsCache;
     if(remote.portfolio)state.portfolio=remote.portfolio;
     if(remote.portfolioMeta)state.portfolioMeta=remote.portfolioMeta;
     migratePortfolioToAccounts();   // a device on an older build may send legacy rows
@@ -3721,7 +2951,6 @@ async function pushToDrive(opts){
     const data=JSON.stringify({
       entries:state.entries,memos:state.memos,tickerTags:state.tickerTags,
       portfolio:state.portfolio,portfolioMeta:state.portfolioMeta,portfolioSyncedAt:state.portfolioSyncedAt,
-      newsCache:state.newsCache,
       lastSync:now
     },null,2);
 
