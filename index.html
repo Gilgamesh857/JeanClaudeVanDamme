@@ -7,10 +7,10 @@
 <meta name="theme-color" content="#1c1b18" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="invest.diary">
+<meta name="apple-mobile-web-app-title" content="Diary">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>invest.diary</title>
+<title>Diary</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Geist:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -266,7 +266,7 @@ const DEFAULT_ACCOUNT='gilgamesh';
 
 /* Set at build time. Tap the brand to see it — the fastest way to tell
    whether a device is running a stale cached copy. */
-const BUILD_STAMP='2026-08-22 10:46 UTC';
+const BUILD_STAMP='2026-08-22 20:41 UTC';
 
 const MEMO_SECTIONS=['thesis','risks','catalysts','management','funding','valuation','technicals','reasons_to_sell','description'];
 
@@ -3252,7 +3252,11 @@ document.addEventListener('visibilitychange',()=>{
 });
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>{
-    navigator.serviceWorker.register('sw.js')
+    // updateViaCache:'none' stops the browser caching sw.js itself, and the
+    // explicit update() means a redeploy is noticed on the next open rather
+    // than whenever the browser feels like checking.
+    navigator.serviceWorker.register('sw.js',{scope:'./',updateViaCache:'none'})
+      .then(reg=>{ reg.update().catch(()=>{}); })
       .catch(e=>console.warn('SW registration failed:',e));
   });
 }
