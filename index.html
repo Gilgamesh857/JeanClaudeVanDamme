@@ -7,10 +7,10 @@
 <meta name="theme-color" content="#1c1b18" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Diary">
+<meta name="apple-mobile-web-app-title" content="Gilgamesh">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>Diary</title>
+<title>Gilgamesh</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=Geist:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -27,6 +27,7 @@
     --conviction-4:#fff0e8;--conviction-4t:#b04000;
     --conviction-5:#fce8e8;--conviction-5t:#a01515;
     --r:10px;--r2:16px;--shadow:0 1px 4px rgba(0,0,0,0.06),0 4px 16px rgba(0,0,0,0.04);
+    --vvh:100vh;   /* live height of the visible viewport — see setViewportUnit() */
     --font-body:'Geist',sans-serif;--font-serif:'DM Serif Display',serif;--font-mono:'DM Mono',monospace;
   }
   @media(prefers-color-scheme:dark){
@@ -91,7 +92,7 @@
   .scroll-area{flex:1;overflow-y:auto;padding:16px}
   .compose-card{background:var(--surface);border-radius:var(--r2);border:1px solid var(--border2);padding:14px;margin-bottom:16px;box-shadow:var(--shadow)}
   .compose-label{font-size:11px;font-family:var(--font-mono);color:var(--ink3);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px}
-  .compose-area{width:100%;min-height:80px;border:none;outline:none;font-size:15px;font-family:var(--font-body);color:var(--ink);background:transparent;resize:none;line-height:1.6}
+  .compose-area{width:100%;min-height:calc(var(--vvh) * 0.30);border:none;outline:none;font-size:15px;font-family:var(--font-body);color:var(--ink);background:transparent;resize:none;line-height:1.6;overflow-y:auto}
   .compose-area::placeholder{color:var(--ink3)}
   .compose-footer{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
   .preview-tags{display:flex;flex-wrap:wrap;gap:4px;flex:1}
@@ -143,10 +144,10 @@
   .filter-chip.active{background:var(--tag-bg);color:var(--tag-txt);border-color:var(--tag-txt)}
   .filter-chip.hash-chip.active{background:var(--hash-bg);color:var(--hash-txt);border-color:var(--hash-txt)}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:200;display:flex;align-items:flex-end;justify-content:center}
-  .modal{background:var(--surface);border-radius:var(--r2) var(--r2) 0 0;padding:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto}
+  .modal{background:var(--surface);border-radius:var(--r2) var(--r2) 0 0;padding:20px;width:100%;max-width:480px;max-height:calc(var(--vvh) * 0.92);overflow-y:auto}
   .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
   .modal-title{font-family:var(--font-serif);font-size:18px}
-  .modal textarea{width:100%;min-height:100px;border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:14px;font-family:var(--font-body);color:var(--ink);background:var(--surface2);outline:none;resize:vertical}
+  .modal textarea{width:100%;min-height:calc(var(--vvh) * 0.38);border:1px solid var(--border2);border-radius:var(--r);padding:10px;font-size:15px;font-family:var(--font-body);color:var(--ink);background:var(--surface2);outline:none;resize:vertical;line-height:1.6}
   .modal textarea:focus{border-color:var(--accent)}
   .modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
   .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--surface);font-size:13px;font-family:var(--font-mono);padding:8px 16px;border-radius:20px;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none}
@@ -188,7 +189,7 @@
   .memo-section-chevron{font-size:11px;color:var(--ink3);transition:transform .2s}
   .memo-section-chevron.open{transform:rotate(180deg)}
   .memo-section-content{padding:12px 14px;background:var(--surface)}
-  .memo-section-content textarea{width:100%;min-height:80px;border:none;outline:none;font-size:14px;font-family:var(--font-body);color:var(--ink);background:transparent;resize:none;line-height:1.65}
+  .memo-section-content textarea{width:100%;min-height:150px;border:none;outline:none;font-size:15px;font-family:var(--font-body);color:var(--ink);background:transparent;resize:none;line-height:1.65;overflow:hidden}
   .memo-section-content textarea::placeholder{color:var(--ink3)}
   .memo-section-rendered{font-size:14px;line-height:1.65;color:var(--ink2);white-space:pre-wrap;word-break:break-word;min-height:24px}
   .memo-section-rendered:empty::after{content:attr(data-placeholder);color:var(--ink3);font-style:italic}
@@ -266,7 +267,7 @@ const DEFAULT_ACCOUNT='gilgamesh';
 
 /* Set at build time. Tap the brand to see it — the fastest way to tell
    whether a device is running a stale cached copy. */
-const BUILD_STAMP='2026-08-22 20:41 UTC';
+const BUILD_STAMP='2026-08-25 05:31 UTC';
 
 const MEMO_SECTIONS=['thesis','risks','catalysts','management','funding','valuation','technicals','reasons_to_sell','description'];
 
@@ -646,7 +647,7 @@ function renderLog(){
   const entries=filteredEntries();
   const composeHtml=`<div class="compose-card" id="composeCard" style="display:none">
     <div class="compose-label">Quick log</div>
-    <textarea class="compose-area" id="composeText" placeholder="What's on your mind? Try: Bought more $MSFT today — strong earnings #thesis #tech&#10;Tag a macro call with #view_gold to track it over time." oninput="onComposeInput()" rows="4"></textarea>
+    <textarea class="compose-area" id="composeText" placeholder="What's on your mind? Try: Bought more $MSFT today — strong earnings #thesis #tech&#10;Tag a macro call with #view_gold to track it over time." oninput="onComposeInput();autoGrow(this,0.42)" rows="4"></textarea>
     <div class="preview-tags" id="composeTags"></div>
     <div class="compose-footer">
       <div></div>
@@ -917,7 +918,7 @@ function renderMemoSection(memo,sectionKey){
     </div>
     <div class="memo-section-content" id="msc-${memo.id}-${sectionKey}">
       ${isEditing
-        ?`<textarea id="msta-${memo.id}-${sectionKey}" placeholder="Write your ${label.toLowerCase()} notes here…">${content.replace(/</g,'&lt;')}</textarea>
+        ?`<textarea id="msta-${memo.id}-${sectionKey}" oninput="autoGrow(this,0.5)" placeholder="Write your ${label.toLowerCase()} notes here…">${content.replace(/</g,'&lt;')}</textarea>
            <div class="memo-section-edit-footer">
              <button class="btn btn-ghost btn-sm" onclick="cancelSectionEdit('${memo.id}','${sectionKey}')">Cancel</button>
              <button class="btn btn-primary btn-sm" onclick="saveSectionEdit('${memo.id}','${sectionKey}')">Save</button>
@@ -1027,6 +1028,15 @@ function startSectionEdit(memoId,sectionKey){
   window[`editing_${memoId}_${sectionKey}`]=true;
   const el=document.getElementById('mainContent');
   renderMemoView(el);
+  setTimeout(()=>{
+    const ta=document.getElementById(`msta-${memoId}-${sectionKey}`);
+    if(!ta)return;
+    autoGrow(ta,0.5);
+    ta.focus();
+    // put the cursor at the end rather than the start of existing notes
+    try{ta.setSelectionRange(ta.value.length,ta.value.length);}catch(e){}
+    scrollElIntoView(ta,'center');
+  },30);
   setTimeout(()=>{
     const ta=document.getElementById(`msta-${memoId}-${sectionKey}`);
     if(ta){ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);}
@@ -2640,7 +2650,10 @@ function parseMV(val){
 function openCompose(){
   const card=document.getElementById('composeCard');
   if(!card){setTab('log');setTimeout(openCompose,50);return;}
-  card.style.display='block';document.getElementById('composeText').focus();
+  card.style.display='block';
+  const ta=document.getElementById('composeText');
+  ta.focus();
+  setTimeout(()=>{autoGrow(ta,0.42);scrollElIntoView(ta,'start');},30);
   document.getElementById('fab').style.display='none';
 }
 function closeCompose(){
@@ -2670,8 +2683,15 @@ function deleteEntry(id){
 function editEntry(id){
   const entry=state.entries.find(e=>e.id===id);if(!entry)return;
   const root=document.getElementById('modalRoot');
-  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Edit entry</div><button class="icon-btn" onclick="closeModal()">✕</button></div><textarea id="editText" oninput="onEditInput('${id}')">${entry.text.replace(/</g,'&lt;')}</textarea><div class="preview-tags" id="editTags" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px"></div><div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveEdit('${id}')">Save</button></div></div></div>`;
-  setTimeout(()=>onEditInput(id),0);
+  root.innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modal-header"><div class="modal-title">Edit entry</div><button class="icon-btn" onclick="closeModal()">✕</button></div><textarea id="editText" oninput="onEditInput('${id}');autoGrow(this,0.55)">${entry.text.replace(/</g,'&lt;')}</textarea><div class="preview-tags" id="editTags" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px"></div><div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="saveEdit('${id}')">Save</button></div></div></div>`;
+  setTimeout(()=>{
+    onEditInput(id);
+    const ta=document.getElementById('editText');
+    if(!ta)return;
+    autoGrow(ta,0.55);
+    ta.focus();
+    try{ta.setSelectionRange(ta.value.length,ta.value.length);}catch(e){}
+  },30);
 }
 function onEditInput(id){const text=document.getElementById('editText')?.value||'';const tEl=document.getElementById('editTags');if(!tEl)return;tEl.innerHTML=extractTickers(text).map(t=>`<span class="tag ticker">${t}</span>`).join('')+extractHashes(text).map(h=>`<span class="tag hash">${h}</span>`).join('');}
 function saveEdit(id){
@@ -3216,6 +3236,45 @@ async function resolveConflict(choice){
 }
 
 // Keep the batch countdown honest without re-rendering the whole app
+/* On a phone the keyboard covers part of the screen. `vh` units measure the
+   whole screen and would size an editor to sit underneath it, so instead we
+   track visualViewport — which excludes the keyboard — and expose it as --vvh.
+   Falls back to 100vh where the API is missing, i.e. exactly today's behaviour. */
+function setViewportUnit(){
+  const vv=window.visualViewport;
+  const h=vv?vv.height:window.innerHeight;
+  if(h>0)document.documentElement.style.setProperty('--vvh',h+'px');
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener('resize',setViewportUnit);
+  window.visualViewport.addEventListener('scroll',setViewportUnit);
+}
+window.addEventListener('resize',setViewportUnit);
+window.addEventListener('orientationchange',()=>setTimeout(setViewportUnit,150));
+setViewportUnit();
+
+/* Grow a textarea to fit its content so long text never hides inside a small
+   scrolling box. Capped so it can't push its own Save button off-screen. */
+/* Not present in every WebView, so never called bare. */
+function scrollElIntoView(el,block){
+  if(el&&typeof el.scrollIntoView==='function'){
+    try{el.scrollIntoView({block:block||'center',behavior:'smooth'});}catch(e){}
+  }
+}
+function autoGrow(el,maxFraction){
+  if(!el)return;
+  const cap=(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--vvh'))||window.innerHeight||800)*(maxFraction||0.55);
+  el.style.height='auto';
+  const want=el.scrollHeight;
+  el.style.height=Math.min(want,cap)+'px';
+  el.style.overflowY=want>cap?'auto':'hidden';
+}
+/* Apply to every textarea currently on screen — cheap, and keeps memo sections
+   correct after they are expanded or re-rendered. */
+function autoGrowAll(){
+  document.querySelectorAll('.memo-section-content textarea').forEach(t=>autoGrow(t,0.5));
+}
+
 function showBuild(){
   showToast('Build '+BUILD_STAMP);
 }
